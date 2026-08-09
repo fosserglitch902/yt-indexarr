@@ -479,6 +479,7 @@ jq -c \
   {
     score: $score,
     probable: $probable,
+    has_episode: ($episode_score > 0),
     normalized_title: $normalized_title,
     id: .id,
     title: .title,
@@ -498,9 +499,10 @@ jq -c \
 ' "$DEDUP" > "$SCORED"
 
 
-# Sort and limit final results.
+# Sort and limit final results.  Number-matched episodes (has_episode) always
+# sort above title-only candidates; within each tier, score decides.
 jq -c -s --argjson max "$MAX_RESULTS" '
-  sort_by(-.score)
+  sort_by([if .has_episode then 0 else 1 end, -.score])
   | .[0:$max]
   | .[]
 ' "$SCORED" > "$SORTED"
@@ -523,7 +525,7 @@ fi
 if [[ "$RESOLVE_TOP" -gt 0 ]] && command -v xargs >/dev/null 2>&1; then
   head -n "$RESOLVE_TOP" "$SORTED" | jq -r '.url // empty' |
     xargs -P 4 -I{} sh -c \
-      'yt-dlp --ignore-config --dump-json --no-warnings --skip-download --retries 3 "$1" 2>/dev/null | jq -c --arg url "$1" '"'"'{url: $url, height: (.height // 0), timestamp: (.timestamp // 0)}'"'"' ' _ {} \
+      'yt-dlp --ignore-config --dump-json --no-warnings --skip-download --retries 3 "$1" 2>/dev/null | jq -c --arg url "$1" '"'"'{url: $url, height: (.height // 0), timestamp: (.timestamp // 0), language: (.language // "")}'"'"' ' _ {} \
       > "$RESOLVED" 2>/dev/null || true
   jq -c -s --slurpfile meta "$RESOLVED" '
     def rfc2822($ts):
@@ -538,12 +540,13 @@ if [[ "$RESOLVE_TOP" -gt 0 ]] && command -v xargs >/dev/null 2>&1; then
     ($meta | map({key: .url, value: .}) | from_entries) as $m |
     .[] |
     . as $item |
-    ($m[.url] // {} | {height: (.height // 0), timestamp: (.timestamp // 0)}) as $r |
+    ($m[.url] // {} | {height: (.height // 0), timestamp: (.timestamp // 0), language: (.language // "")}) as $r |
     ((if $r.height > 0 then qlabel($r.height) else null end)) as $res |
     (((if $r.timestamp > 0 then $r.timestamp else $item.timestamp end))) as $ts |
     $item +
     {
       resolution: $res,
+      language: ($r.language // ""),
       pub_date: rfc2822($ts),
       normalized_title: (
         if $res then (.normalized_title + " " + $res) else .normalized_title end

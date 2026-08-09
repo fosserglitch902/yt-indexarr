@@ -137,6 +137,9 @@ def _rss_xml(items: list, self_url: str) -> bytes:
         ET.SubElement(
             item, f"{{{TORZNAB_NS}}}attr", name="source", value=it.get("source") or "web"
         )
+        lang = it.get("language")
+        if lang:
+            ET.SubElement(item, f"{{{TORZNAB_NS}}}attr", name="language", value=lang)
     return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
 
 
@@ -195,6 +198,7 @@ def run_search(series: str, season: str, episode: str, episode_title: str = "") 
                 "size": estimate_size(int(data.get("duration", 0) or 0)),
                 "description": data.get("title", ""),
                 "resolution": data.get("resolution") or "",
+                "language": data.get("language") or "",
                 "source": "web",
                 "pub_date": data.get("pub_date") or _now_rfc2822(),
             }

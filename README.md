@@ -40,12 +40,19 @@ Requires `yt-dlp` and `jq`. See `./yt-episode-search.sh -h` for all options.
 | `MIN_DURATION` | Minimum video length in seconds (default 300) |
 | `RESOLVE_TOP`  | Number of top candidates to re-probe for resolution metadata (default 5, `0` disables) |
 
-**Output fields** (JSONL, `-j`): `score`, `probable`, `normalized_title`,
-`id`, `title`, `url`, `duration`, `timestamp`, `channel`, `views`, per-factor
-scores, `queries`, plus `resolution` (e.g. `1080p`) and `pub_date` (RFC 2822)
-added by the quality pass. When `-t` is given, the episode title is folded
-into the normalized title (`Bluey S03E38 Cubby WEB`); when resolution is
-known it is appended (`Bluey S03E38 Cubby WEB 1080p`).
+**Output fields** (JSONL, `-j`): `score`, `probable`, `has_episode`,
+`normalized_title`, `id`, `title`, `url`, `duration`, `timestamp`, `channel`,
+`views`, per-factor scores, `queries`, plus `resolution` (e.g. `1080p`),
+`language` (audio ISO code, e.g. `en`) and `pub_date` (RFC 2822) added by the
+quality pass. When `-t` is given, the episode title is folded into the
+normalized title (`Bluey S03E38 Cubby WEB`); when resolution is known it is
+appended (`Bluey S03E38 Cubby WEB 1080p`).
+
+**Ranking**: results are sorted by tier first — candidates whose video title
+carries a season/episode token (`has_episode`) always sort above title-only
+candidates — then by score. The episode title acts as a boost *within* a tier,
+not a substitute for the episode number. Title-only candidates (e.g. season-0
+specials named only by episode title) are still returned, just ranked below.
 
 ### `indexer.py`
 
@@ -85,6 +92,11 @@ magnet:?xt=urn:btih:<sha1(url)>&dn=<release title>&x.ytindexer=<base64url(url)>
 - `x.ytindexer` — base64url of the real `https://www.youtube.com/watch?v=...`
 
 `<link>`/`guid` keep the real YouTube URL for human use.
+
+**Torznab attributes** per item: `seeders`/`peers` (views), `size`,
+`resolution` (e.g. `1080p`, only when probed), `source` (`web`), and
+`language` (audio ISO code, e.g. `en`, only when probed). Items past the
+`RESOLVE_TOP` probe get no `resolution`/`language` attrs.
 
 **Authentication**
 
