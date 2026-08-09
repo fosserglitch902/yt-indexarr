@@ -12,7 +12,8 @@ Options:
   -s SERIES      Series name (required)
   -S SEASON      Season number (required)
   -E EPISODE     Episode number (required)
-  -t TITLE       Episode title (optional but strongly recommended)
+  -t TITLE       Episode title (optional but strongly recommended;
+                 repeatable for localized/alternate titles)
   -n MAX         Max final results to output (default: 20)
   -p PER_QUERY   Number of results per YouTube query (default: 5)
   -d DELAY       Delay between queries in seconds (default: 1)
@@ -49,7 +50,7 @@ require_cmd() {
 SERIES=""
 SEASON=""
 EPISODE=""
-EP_TITLE=""
+declare -a EP_TITLES=()
 MAX_RESULTS=20
 PER_QUERY=5
 DELAY=1
@@ -66,7 +67,7 @@ while getopts ":s:S:E:t:n:p:d:o:Dbjh" opt; do
     s) SERIES="$OPTARG" ;;
     S) SEASON="$OPTARG" ;;
     E) EPISODE="$OPTARG" ;;
-    t) EP_TITLE="$OPTARG" ;;
+    t) EP_TITLES+=("$OPTARG") ;;
     n) MAX_RESULTS="$OPTARG" ;;
     p) PER_QUERY="$OPTARG" ;;
     d) DELAY="$OPTARG" ;;
@@ -140,11 +141,14 @@ queries=(
 )
 
 
-if [[ -n "$EP_TITLE" ]]; then
+# Query expansion uses the primary (first) title only, so the number of
+# YouTube searches stays bounded; all titles still count for scoring below.
+PRIMARY_TITLE="${EP_TITLES[0]:-}"
+if [[ -n "$PRIMARY_TITLE" ]]; then
   queries+=(
-    "$SERIES $SE_TAG $EP_TITLE"
-    "$SERIES $EP_TITLE"
-    "$SERIES episode $EPISODE $EP_TITLE"
+    "$SERIES $SE_TAG $PRIMARY_TITLE"
+    "$SERIES $PRIMARY_TITLE"
+    "$SERIES episode $EPISODE $PRIMARY_TITLE"
   )
 fi
 
@@ -294,6 +298,12 @@ EP_TOKENS_JSON="$(
   '
 )"
 
+# All episode-title match targets as a JSON array (primary + localized).
+EP_TITLES_JSON="$(
+  printf '%s\0' "${EP_TITLES[@]}" \
+    | jq -Rs 'split("\u0000") | map(select(length > 0))'
+)"
+
 
 # Score candidates.
 #
@@ -308,7 +318,8 @@ EP_TOKENS_JSON="$(
 # to what Sonarr would want to see.
 jq -c \
   --arg series "$SERIES" \
-  --arg ep_title "$EP_TITLE" \
+  --arg ep_title "$PRIMARY_TITLE" \
+  --argjson ep_titles "$EP_TITLES_JSON" \
   --arg season "$SEASON" \
   --arg episode "$EPISODE" \
   --argjson min_duration "$MIN_DURATION" \
@@ -329,7 +340,6 @@ jq -c \
 
 
   ($series | norm) as $s_norm |
-  ($ep_title | norm) as $et_norm |
 
 
   ($season | tostring | pad2) as $sp |
@@ -361,20 +371,29 @@ jq -c \
   ) as $episode_score |
 
 
-  # Episode title match score.
+  # Episode title match score: the best score across all provided titles
+  # (primary + localized alternatives).  A full-title hit earns 20; otherwise
+  # partial word matches scale up to 20.
   (
-    if $et_norm == "" then
+    if ($ep_titles | length) == 0 then
       0
-    elif ($t_norm | contains($et_norm)) then
-      20
     else
-      ($et_norm | split(" ") | map(select(length >= 3))) as $et_words |
-      if ($et_words | length) == 0 then
-        0
-      else
-        ([ $et_words[] | select(. as $w | $t_norm | contains($w)) ] | length) as $matched |
-        ((20 * $matched / ($et_words | length)) | floor)
-      end
+      ([ $ep_titles[] |
+        ((. | norm) as $et |
+         if $et == "" then
+           0
+         elif ($t_norm | contains($et)) then
+           20
+         else
+           ($et | split(" ") | map(select(length >= 3))) as $et_words |
+           if ($et_words | length) == 0 then
+             0
+           else
+             ([ $et_words[] | select(. as $w | $t_norm | contains($w)) ] | length) as $matched |
+             ((20 * $matched / ($et_words | length)) | floor)
+           end
+         end)
+      ] | max)
     end
   ) as $title_score |
 

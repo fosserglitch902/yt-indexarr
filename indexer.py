@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from email.utils import format_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import tvdb
 import tvmaze
 
 log = logging.getLogger("yt-indexer")
@@ -66,7 +67,7 @@ def _caps_xml() -> bytes:
         searching, "search", available="no", supportedParams="q"
     )
     ET.SubElement(
-        searching, "tv-search", available="yes", supportedParams="q,season,ep,tvdbid"
+        searching, "tv-search", available="yes", supportedParams="q,season,ep,tvdbid,language"
     )
     ET.SubElement(
         searching, "movie-search", available="no", supportedParams="q"
@@ -162,7 +163,9 @@ def estimate_size(duration: int) -> int:
     return int(duration * ((1.5 * 1024 * 1024 / 8) + (128 * 1024 / 8)))
 
 
-def run_search(series: str, season: str, episode: str, episode_title: str = "") -> list:
+def run_search(
+    series: str, season: str, episode: str, episode_titles: list = None
+) -> list:
     cmd = [
         SEARCH_SCRIPT,
         "-s", series,
@@ -170,8 +173,8 @@ def run_search(series: str, season: str, episode: str, episode_title: str = "") 
         "-E", str(episode),
         "-j",
     ]
-    if episode_title:
-        cmd += ["-t", episode_title]
+    for title in episode_titles or []:
+        cmd += ["-t", title]
     log.info("running search: %s", " ".join(cmd))
     proc = subprocess.run(
         cmd,
@@ -247,21 +250,53 @@ def handle_tvsearch(params: dict, self_url: str) -> bytes:
         if not series:
             series = os.environ.get("YT_INDEXER_FALLBACK_QUERY", "tv episode")
 
-    # Resolve the episode title via TVMaze using the tvdbid Sonarr sends.
-    # Failures degrade gracefully to the current number-only search.
-    episode_title = ""
-    if tvdbid or series:
+    # Localized title matching.  Sonarr's per-indexer "Additional parameters"
+    # can send language=fr,en; TVDB provides localized episode titles when
+    # TVDB_API_KEY is configured, otherwise we fall back to the TVMaze
+    # (English) title.  Failures degrade gracefully to number-only search.
+    languages = _parse_languages(params)
+    episode_titles = []
+    if tvdbid and tvdb.enabled():
+        episode_titles = tvdb.resolve_titles(
+            tvdbid, season_num, int(episode), languages
+        )
+        if episode_titles:
+            log.info(
+                "TVDB: tvdbid=%s s%se%s titles=%r",
+                tvdbid, season_num, episode, episode_titles,
+            )
+    if not episode_titles:
+        if languages and not tvdb.enabled():
+            log.info(
+                "language=%r requested but TVDB_API_KEY not set; "
+                "using TVMaze English title",
+                languages,
+            )
         episode_title = tvmaze.resolve_title(
             tvdbid, season_num, int(episode), name=series
         )
         if episode_title:
+            episode_titles = [episode_title]
             log.info(
                 "TVMaze: tvdbid=%r s%se%s -> %r",
                 tvdbid, season_num, episode, episode_title,
             )
 
-    items = run_search(series, season_num, int(episode), episode_title)
+    items = run_search(series, season_num, int(episode), episode_titles)
     return _rss_xml(items, self_url)
+
+
+def _parse_languages(params: dict) -> list:
+    """Parse the language/lang param into a list of ISO-639-1 codes (max 2)."""
+    raw = (params.get("language") or params.get("lang") or "").strip()
+    langs = []
+    for part in raw.split(","):
+        code = part.strip().lower()
+        if 2 <= len(code) <= 3 and code.isalpha() and code not in langs:
+            langs.append(code)
+        if len(langs) == 2:
+            break
+    return langs
 
 
 def handle_search(params: dict, self_url: str) -> bytes:

@@ -30,6 +30,7 @@ Requires `yt-dlp` and `jq`. See `./yt-episode-search.sh -h` for all options.
 | `-o`  | Download directory (with `-D`) |
 | `-D`  | Download the best candidate |
 | `-b`  | Print only the best candidate URL |
+| `-t`  | Episode title; repeatable for localized/alternate titles |
 | `-j`  | Emit JSONL (used by the indexer) |
 | `-h`  | Help |
 
@@ -70,14 +71,28 @@ python3 indexer.py
 - `?t=search&q=<term>` — generic search
 - `?t=rss` — latest matches
 
-**Episode-title lookup (TVMaze)**
+**Episode-title lookup (TVMaze + TheTVDB)**
 
 Sonarr only sends `q` + `season`/`ep` — never the episode title. When a
 `tvdbid` is supplied (advertised in caps), `indexer.py` resolves the episode
-title via TVMaze and passes it to the search script as `-t`, so
-title-only-named videos (e.g. season-0 specials) surface with a `title_score`.
-Lookups are cached in memory + on disk (default TTL 7 days); any failure
-degrades gracefully to the number-only search.
+title and passes it to the search script as `-t`, so title-only-named videos
+(e.g. season-0 specials) surface with a `title_score`. Lookups are cached in
+memory + on disk (default TTL 7 days); any failure degrades gracefully to the
+number-only search.
+
+**Localized episode titles (languages)**
+
+TVMaze has no episode translations, so localized titles come from **TheTVDB v4**
+(the same source Sonarr uses) when `TVDB_API_KEY` is set — otherwise the lookup
+falls back to TVMaze (English). Sonarr does not transmit a series' language
+over Torznab, so the wanted language(s) are sent via the `language` (or `lang`)
+query param, comma-separated ISO-639-1 codes (max **2**, e.g. `language=fr,en`).
+In Sonarr, add that to the indexer's **Additional parameters** field
+(Settings → Indexers → the yt-indexarr indexer → Additional parameters).
+
+Titles are matched in the requested order plus English as a safety net; the
+search script accepts repeated `-t` flags and scores against any of them. If
+`TVDB_API_KEY` is absent, a `language` param is ignored (English/TVMaze only).
 
 **Release enclosures (magnet carrier)**
 
@@ -128,6 +143,13 @@ key: `youtubeindexer` (set `YT_INDEXER_API_KEY` to change it).
 | `TVMAZE_TIMEOUT` | Per-lookup timeout seconds (default 5) |
 | `TVMAZE_CACHE_FILE` | Disk cache path (default `~/.cache/yt-indexarr/tvmaze.json`) |
 | `TVMAZE_CACHE_TTL` | Cache TTL seconds (default 7 days) |
+| `TVDB_API_KEY` | TheTVDB v4 API key (enables localized episode titles) |
+| `TVDB_PIN` | TheTVDB subscriber PIN (only for user-supported keys) |
+| `TVDB_API` | TheTVDB v4 base URL (default `https://api4.thetvdb.com/v4`) |
+| `TVDB_TIMEOUT` | Per-lookup timeout seconds (default 5) |
+| `TVDB_TOKEN_FILE` | Token cache path (default `~/.cache/yt-indexarr/tvdb_token.json`) |
+| `TVDB_CACHE_FILE` | Disk cache path (default `~/.cache/yt-indexarr/tvdb.json`) |
+| `TVDB_CACHE_TTL` | Cache TTL seconds (default 7 days) |
 
 ## Setup with Prowlarr / Sonarr
 
