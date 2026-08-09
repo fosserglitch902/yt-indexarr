@@ -539,10 +539,15 @@ if [[ "$RESOLVE_TOP" -gt 0 ]] && command -v xargs >/dev/null 2>&1; then
     .[] |
     . as $item |
     ($m[.url] // {} | {height: (.height // 0), timestamp: (.timestamp // 0)}) as $r |
+    ((if $r.height > 0 then qlabel($r.height) else null end)) as $res |
+    (((if $r.timestamp > 0 then $r.timestamp else $item.timestamp end))) as $ts |
     $item +
     {
-      resolution: (if $r.height > 0 then qlabel($r.height) else null end),
-      pub_date: rfc2822((if $r.timestamp > 0 then $r.timestamp else $item.timestamp end))
+      resolution: $res,
+      pub_date: rfc2822($ts),
+      normalized_title: (
+        if $res then (.normalized_title + " " + $res) else .normalized_title end
+      )
     }
   ' "$SORTED" > "$FINAL"
 else

@@ -43,7 +43,9 @@ Requires `yt-dlp` and `jq`. See `./yt-episode-search.sh -h` for all options.
 **Output fields** (JSONL, `-j`): `score`, `probable`, `normalized_title`,
 `id`, `title`, `url`, `duration`, `timestamp`, `channel`, `views`, per-factor
 scores, `queries`, plus `resolution` (e.g. `1080p`) and `pub_date` (RFC 2822)
-added by the quality pass.
+added by the quality pass. When `-t` is given, the episode title is folded
+into the normalized title (`Bluey S03E38 Cubby WEB`); when resolution is
+known it is appended (`Bluey S03E38 Cubby WEB 1080p`).
 
 ### `indexer.py`
 
@@ -57,9 +59,32 @@ python3 indexer.py
 **Endpoints**
 
 - `?t=caps` — capabilities
-- `?t=tvsearch&q=<show>&season=<n>&ep=<n>` — episode search
+- `?t=tvsearch&q=<show>&season=<n>&ep=<n>[&tvdbid=<id>]` — episode search
 - `?t=search&q=<term>` — generic search
 - `?t=rss` — latest matches
+
+**Episode-title lookup (TVMaze)**
+
+Sonarr only sends `q` + `season`/`ep` — never the episode title. When a
+`tvdbid` is supplied (advertised in caps), `indexer.py` resolves the episode
+title via TVMaze and passes it to the search script as `-t`, so
+title-only-named videos (e.g. season-0 specials) surface with a `title_score`.
+Lookups are cached in memory + on disk (default TTL 7 days); any failure
+degrades gracefully to the number-only search.
+
+**Release enclosures (magnet carrier)**
+
+Each `<enclosure>` is a magnet that encodes the release title and the real
+YouTube URL — the contract for the download-client spoof in this monorepo:
+
+```
+magnet:?xt=urn:btih:<sha1(url)>&dn=<release title>&x.ytindexer=<base64url(url)>
+```
+
+- `dn` — the release title (used as the downloaded file name, Sonarr-parseable)
+- `x.ytindexer` — base64url of the real `https://www.youtube.com/watch?v=...`
+
+`<link>`/`guid` keep the real YouTube URL for human use.
 
 **Authentication**
 
@@ -81,6 +106,10 @@ query parameter or as a Bearer token in the `Authorization` header. Default key:
 | `YT_INDEXER_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
 | `MIN_DURATION` | Passed through to the search script |
 | `RESOLVE_TOP` | Passed through to the search script |
+| `TVMAZE_API` | TVMaze base URL (default `https://api.tvmaze.com`) |
+| `TVMAZE_TIMEOUT` | Per-lookup timeout seconds (default 5) |
+| `TVMAZE_CACHE_FILE` | Disk cache path (default `~/.cache/yt-indexarr/tvmaze.json`) |
+| `TVMAZE_CACHE_TTL` | Cache TTL seconds (default 7 days) |
 
 ## Setup with Prowlarr / Sonarr
 

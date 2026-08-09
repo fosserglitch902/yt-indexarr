@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Torznab-compatible indexer for Sonarr/Prowlarr backed by yt-episode-search.sh."""
 
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -11,6 +13,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import tvmaze
 
 log = logging.getLogger("yt-indexer")
 
@@ -56,7 +60,7 @@ def _caps_xml() -> bytes:
         searching, "search", available="no", supportedParams="q"
     )
     ET.SubElement(
-        searching, "tv-search", available="yes", supportedParams="q,season,ep"
+        searching, "tv-search", available="yes", supportedParams="q,season,ep,tvdbid"
     )
     ET.SubElement(
         searching, "movie-search", available="no", supportedParams="q"
@@ -66,6 +70,22 @@ def _caps_xml() -> bytes:
     for cid, name in SUBCATS.items():
         ET.SubElement(tv, "subcat", id=cid, name=name)
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _magnet_url(item: dict) -> str:
+    """Magnet carrier encoding the release title + the real YouTube URL.
+
+    Contract shared with the download-client spoof (same monorepo):
+      xt=urn:btih:<sha1(youtube_url)>   deterministic fake info-hash
+      dn=<url-encoded release title>    used as the torrent/file name
+      x.ytindexer=<base64url(url)>      the real URL the spoof runs yt-dlp on
+    """
+    url = item["url"]
+    title = item.get("title") or "yt"
+    btih = hashlib.sha1(url.encode("utf-8")).hexdigest()
+    dn = urllib.parse.quote(title)
+    xurl = base64.urlsafe_b64encode(url.encode("utf-8")).decode("ascii")
+    return f"magnet:?xt=urn:btih:{btih}&dn={dn}&x.ytindexer={xurl}"
 
 
 def _rss_xml(items: list, self_url: str) -> bytes:
@@ -96,7 +116,7 @@ def _rss_xml(items: list, self_url: str) -> bytes:
         ET.SubElement(
             item,
             "enclosure",
-            url=it["url"],
+            url=_magnet_url(it),
             length=str(it["size"]),
             type="application/x-bittorrent",
         )
@@ -133,7 +153,7 @@ def estimate_size(duration: int) -> int:
     return int(duration * ((1.5 * 1024 * 1024 / 8) + (128 * 1024 / 8)))
 
 
-def run_search(series: str, season: str, episode: str) -> list:
+def run_search(series: str, season: str, episode: str, episode_title: str = "") -> list:
     cmd = [
         SEARCH_SCRIPT,
         "-s", series,
@@ -141,6 +161,8 @@ def run_search(series: str, season: str, episode: str) -> list:
         "-E", str(episode),
         "-j",
     ]
+    if episode_title:
+        cmd += ["-t", episode_title]
     log.info("running search: %s", " ".join(cmd))
     proc = subprocess.run(
         cmd,
@@ -203,7 +225,19 @@ def handle_tvsearch(params: dict, self_url: str) -> bytes:
     if not str(episode).isdigit():
         return _error_xml(f"Invalid episode: {episode}")
 
-    items = run_search(series, season_num, int(episode))
+    # Resolve the episode title via TVMaze using the tvdbid Sonarr sends.
+    # Failures degrade gracefully to the current number-only search.
+    episode_title = ""
+    tvdbid = (params.get("tvdbid") or "").strip()
+    if tvdbid:
+        episode_title = tvmaze.resolve_title(tvdbid, season_num, int(episode))
+        if episode_title:
+            log.info(
+                "TVMaze: tvdbid=%s s%se%s -> %r",
+                tvdbid, season_num, episode, episode_title,
+            )
+
+    items = run_search(series, season_num, int(episode), episode_title)
     return _rss_xml(items, self_url)
 
 
