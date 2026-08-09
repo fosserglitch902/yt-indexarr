@@ -380,14 +380,17 @@ jq -c \
 
 
   # Duration sanity score.
-  # Full episodes are often > 5 minutes.
-  # Very short items are often clips/shorts.
+  # Good range: MIN_DURATION (default 5 min) up to 2h.
+  # Penalties scale with extremity: well under the 5-minute floor is almost
+  # certainly a clip/short; well over 2h is likely a compilation/live stream.
   ((.duration // 0) | if type == "number" then . else (try tonumber catch 0) end) as $dur |
   (
     if $dur >= $min_duration and $dur <= 7200 then
       5
-    elif $dur > 0 and $dur < 60 then
-      -15
+    elif $dur > 0 and $dur < $min_duration then
+      ((-25 * (($min_duration - $dur) / $min_duration)) | floor)
+    elif $dur > 7200 then
+      ((-25 * (($dur - 7200) / 7200)) | floor | if . < -40 then -40 else . end)
     else
       0
     end
