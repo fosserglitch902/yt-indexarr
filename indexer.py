@@ -216,10 +216,11 @@ def handle_tvsearch(params: dict, self_url: str) -> bytes:
     series = (params.get("q") or "").strip()
     season = params.get("season") or ""
     episode = params.get("ep") or params.get("episode") or ""
+    tvdbid = (params.get("tvdbid") or "").strip()
 
     # tvdbid/rid-only queries we cannot answer.
-    if not series:
-        return _error_xml("No search term (q) provided.")
+    if not series and not tvdbid:
+        return _error_xml("No search term (q) or tvdbid provided.")
 
     # Season may be 0 for date-based series; episode required for tvsearch.
     if episode == "" or not str(episode).replace("/", "").isdigit():
@@ -235,12 +236,20 @@ def handle_tvsearch(params: dict, self_url: str) -> bytes:
     if not str(episode).isdigit():
         return _error_xml(f"Invalid episode: {episode}")
 
+    # Prowlarr may send tvdbid instead of (or in addition to) q.  When q is
+    # missing, resolve the series name from TVMaze so we still have a YouTube
+    # search term; last resort is the fallback query.
+    if not series:
+        if tvdbid:
+            series = tvmaze.show_name_by_tvdbid(tvdbid) or ""
+            if series:
+                log.info("TVMaze: tvdbid=%s -> series name %r", tvdbid, series)
+        if not series:
+            series = os.environ.get("YT_INDEXER_FALLBACK_QUERY", "tv episode")
+
     # Resolve the episode title via TVMaze using the tvdbid Sonarr sends.
-    # Prowlarr does not always forward tvdbid, so fall back to resolving the
-    # series by name from q.  Failures degrade gracefully to the current
-    # number-only search.
+    # Failures degrade gracefully to the current number-only search.
     episode_title = ""
-    tvdbid = (params.get("tvdbid") or "").strip()
     if tvdbid or series:
         episode_title = tvmaze.resolve_title(
             tvdbid, season_num, int(episode), name=series

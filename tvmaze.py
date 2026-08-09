@@ -12,6 +12,7 @@ polls do not re-hit TVMaze.
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -89,17 +90,64 @@ def show_by_tvdbid(tvdbid):
     TVMaze answers this lookup with a 301 redirect to the canonical show URL;
     urllib follows redirects automatically.
     """
+    data = _show_for_tvdbid(tvdbid)
+    return data.get("id") if isinstance(data, dict) else None
+
+
+def show_name_by_tvdbid(tvdbid):
+    """Return the TVMaze show name for a thetvdb id, or None."""
+    data = _show_for_tvdbid(tvdbid)
+    return data.get("name") if isinstance(data, dict) else None
+
+
+def _show_for_tvdbid(tvdbid):
+    """TVMaze show dict (id+name) for a thetvdb id, cached; or None."""
     key = f"show:{tvdbid}"
     cached = _cache_get(key)
-    if cached is not None:
+    if isinstance(cached, dict):
         return cached
     result = None
     try:
         data = _get_json(f"/lookup/shows?thetvdb={tvdbid}")
         if isinstance(data, dict) and data.get("id"):
-            result = data["id"]
+            result = data
     except (OSError, ValueError):
         log.warning("TVMaze lookup failed for tvdbid %s", tvdbid)
+    _cache_set(key, result)
+    return result
+
+
+def _strip_trailing_year(name):
+    """Drop Sonarr's year disambiguation suffix, e.g. 'Bluey 2018' -> 'Bluey'."""
+    return re.sub(r"[\(\s]*(?:19|20)\d{2}\s*\)?\s*$", "", name.strip()).rstrip()
+
+
+def show_by_name(name):
+    """Resolve a series name to a TVMaze show id, or None.
+
+    Uses singlesearch (best match).  When that fails for names with a trailing
+    year token (Sonarr appends it to disambiguate, TVMaze titles do not carry
+    it), retries without the year.  Results are cached keyed by name.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    key = "name:" + name.casefold()
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    result = None
+    for cand in dict.fromkeys([name, _strip_trailing_year(name)]):
+        if not cand:
+            continue
+        try:
+            data = _get_json("/singlesearch/shows?q=" + urllib.parse.quote(cand))
+            if isinstance(data, dict) and data.get("id"):
+                result = data["id"]
+                break
+        except (OSError, ValueError):
+            log.warning("TVMaze name lookup failed for %r", cand)
+            continue
     _cache_set(key, result)
     return result
 
@@ -126,12 +174,19 @@ def episode_title(show_id, season, number):
     return result
 
 
-def resolve_title(tvdbid: str, season: int, number: int):
-    """One-call helper: tvdbid + season + number -> episode name or None."""
-    tvdbid = str(tvdbid).strip()
-    if not tvdbid.isdigit():
+def resolve_title(tvdbid, season: int, number: int, name: str = ""):
+    """One-call helper: tvdbid or name + season + number -> episode name.
+
+    Prefers the tvdbid lookup; falls back to a series-name lookup when tvdbid
+    is absent (Prowlarr does not always forward it).  Returns None when
+    nothing resolves.
+    """
+    if tvdbid and str(tvdbid).isdigit():
+        show_id = show_by_tvdbid(int(tvdbid))
+    elif name:
+        show_id = show_by_name(name)
+    else:
         return None
-    show_id = show_by_tvdbid(int(tvdbid))
     if not show_id:
         return None
     return episode_title(show_id, season, number)
