@@ -100,9 +100,14 @@ magnet:?xt=urn:btih:<sha1(url)>&dn=<release title>&x.ytindexer=<base64url(url)>
 
 **Authentication**
 
-Requests must include the API key, either as `?apikey=...` (or `?key=...`)
-query parameter or as a Bearer token in the `Authorization` header. Default key:
-`youtubeindexer` (set `YT_INDEXER_API_KEY` to change it).
+Auth is **optional by default** — requests are accepted without a key, so a
+Prowlarr "Generic Torznab" indexer needs nothing beyond the URL. Set
+`YT_INDEXER_REQUIRE_KEY=1` to enforce the API key on every request; when
+enforced, requests must include it as `?apikey=...` (or `?key=...`). Default
+key: `youtubeindexer` (set `YT_INDEXER_API_KEY` to change it).
+
+> Only run without a key on a trusted network — with auth off, the indexer is
+> open to anyone who can reach the port.
 
 **Environment**
 
@@ -111,6 +116,7 @@ query parameter or as a Bearer token in the `Authorization` header. Default key:
 | `YT_INDEXER_HOST` | Bind host (default `127.0.0.1`) |
 | `YT_INDEXER_PORT` | Bind port (default `9117`) |
 | `YT_INDEXER_API_KEY` | API key (default `youtubeindexer`) |
+| `YT_INDEXER_REQUIRE_KEY` | Enforce the API key: `1`/`0` (default `0` — auth off) |
 | `YT_INDEXER_NAME` | Indexer name reported in caps (default `yt-indexarr`) |
 | `YT_INDEXER_BASE_URL` | Public base URL for self-references (default from request) |
 | `YT_INDEXER_SCRIPT` | Path to the search script (default `./yt-episode-search.sh`) |
@@ -127,7 +133,9 @@ query parameter or as a Bearer token in the `Authorization` header. Default key:
 
 1. Add a **Generic Torznab** indexer in Prowlarr.
 2. URL: `http://<host>:9117/torznab`
-3. API key: `youtubeindexer` (or whatever `YT_INDEXER_API_KEY` is set to).
+3. API key: leave blank (auth is off by default). If you set
+   `YT_INDEXER_REQUIRE_KEY=1`, enter `youtubeindexer` (or your
+   `YT_INDEXER_API_KEY`).
 4. Run: `setsid python3 /youtube-indexer/indexer.py >/tmp/indexer.log 2>&1 < /dev/null &`
 
 Each search invokes `yt-dlp`, so searches take a few seconds. Caching/Prowlarr

@@ -30,6 +30,12 @@ SEARCH_SCRIPT = os.environ.get(
 HOST = os.environ.get("YT_INDEXER_HOST", "0.0.0.0")
 PORT = int(os.environ.get("YT_INDEXER_PORT", "9117"))
 API_KEY = os.environ.get("YT_INDEXER_API_KEY", "youtubeindexer")
+# Auth is optional by default; set YT_INDEXER_REQUIRE_KEY=1 (or true/yes/on)
+# to enforce the API key on every request.
+REQUIRE_KEY = (
+    os.environ.get("YT_INDEXER_REQUIRE_KEY", "0").strip().lower()
+    in ("1", "true", "yes", "on")
+)
 INDEXER_NAME = os.environ.get("YT_INDEXER_INDEXER_NAME", "YouTube")
 BASE_URL = os.environ.get("YT_INDEXER_BASE_URL", f"http://localhost:{PORT}")
 
@@ -230,14 +236,18 @@ def handle_tvsearch(params: dict, self_url: str) -> bytes:
         return _error_xml(f"Invalid episode: {episode}")
 
     # Resolve the episode title via TVMaze using the tvdbid Sonarr sends.
-    # Failures degrade gracefully to the current number-only search.
+    # Prowlarr does not always forward tvdbid, so fall back to resolving the
+    # series by name from q.  Failures degrade gracefully to the current
+    # number-only search.
     episode_title = ""
     tvdbid = (params.get("tvdbid") or "").strip()
-    if tvdbid:
-        episode_title = tvmaze.resolve_title(tvdbid, season_num, int(episode))
+    if tvdbid or series:
+        episode_title = tvmaze.resolve_title(
+            tvdbid, season_num, int(episode), name=series
+        )
         if episode_title:
             log.info(
-                "TVMaze: tvdbid=%s s%se%s -> %r",
+                "TVMaze: tvdbid=%r s%se%s -> %r",
                 tvdbid, season_num, episode, episode_title,
             )
 
@@ -321,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
         self_url = f"{BASE_URL}{self.path}"
 
         key = flat.get("apikey") or flat.get("key")
-        if not key or key != API_KEY:
+        if REQUIRE_KEY and (not key or key != API_KEY):
             body = _error_xml("Invalid API key.")
             self._send(body, XML_MIME, status=401)
             return
@@ -358,7 +368,11 @@ def main():
         log.error("search script not found: %s", SEARCH_SCRIPT)
         sys.exit(1)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    log.info("Torznab indexer listening on http://%s:%d (key: %s)", HOST, PORT, API_KEY)
+    auth = "on" if REQUIRE_KEY else "off"
+    log.info(
+        "Torznab indexer listening on http://%s:%d (api key required: %s)",
+        HOST, PORT, auth,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
