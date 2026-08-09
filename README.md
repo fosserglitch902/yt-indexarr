@@ -1,6 +1,7 @@
 # YouTube Indexer
 
-Index and find YouTube videos matching a specific TV episode.
+Index and find YouTube videos matching a specific TV episode, exposed to
+*arr apps as a Torznab indexer.
 
 ## Scripts
 
@@ -13,6 +14,80 @@ likely each video is the actual full episode.
 ./yt-episode-search.sh -s "My Show" -S 1 -E 2 -t "The Cave"
 ```
 
-Requires `yt-dlp` and `jq`.
+Requires `yt-dlp` and `jq`. See `./yt-episode-search.sh -h` for all options.
 
-See `./yt-episode-search.sh -h` for all options.
+**Options**
+
+| Flag | Meaning |
+| ---- | ------- |
+| `-s`  | Series / show name (required) |
+| `-S`  | Season number |
+| `-E`  | Episode number |
+| `-t`  | Episode title |
+| `-n`  | Max results to return (default 20) |
+| `-p`  | Results per yt-dlp query (default 5) |
+| `-d`  | Delay between queries in seconds (default 1) |
+| `-o`  | Download directory (with `-D`) |
+| `-D`  | Download the best candidate |
+| `-b`  | Print only the best candidate URL |
+| `-j`  | Emit JSONL (used by the indexer) |
+| `-h`  | Help |
+
+**Environment**
+
+| Variable | Meaning |
+| -------- | ------- |
+| `MIN_DURATION` | Minimum video length in seconds (default 300) |
+| `RESOLVE_TOP`  | Number of top candidates to re-probe for resolution metadata (default 5, `0` disables) |
+
+**Output fields** (JSONL, `-j`): `score`, `probable`, `normalized_title`,
+`id`, `title`, `url`, `duration`, `timestamp`, `channel`, `views`, per-factor
+scores, `queries`, plus `resolution` (e.g. `1080p`) and `pub_date` (RFC 2822)
+added by the quality pass.
+
+### `indexer.py`
+
+A minimal Torznab HTTP server that wraps `yt-episode-search.sh`. Python
+standard library only — no third-party dependencies.
+
+```sh
+python3 indexer.py
+```
+
+**Endpoints**
+
+- `?t=caps` — capabilities
+- `?t=tvsearch&q=<show>&season=<n>&ep=<n>` — episode search
+- `?t=search&q=<term>` — generic search
+- `?t=rss` — latest matches
+
+**Authentication**
+
+Requests must include the API key, either as `?apikey=...` (or `?key=...`)
+query parameter or as a Bearer token in the `Authorization` header. Default key:
+`youtubeindexer` (set `YT_INDEXER_API_KEY` to change it).
+
+**Environment**
+
+| Variable | Meaning |
+| -------- | ------- |
+| `YT_INDEXER_HOST` | Bind host (default `127.0.0.1`) |
+| `YT_INDEXER_PORT` | Bind port (default `9117`) |
+| `YT_INDEXER_API_KEY` | API key (default `youtubeindexer`) |
+| `YT_INDEXER_NAME` | Indexer name reported in caps (default `yt-indexarr`) |
+| `YT_INDEXER_BASE_URL` | Public base URL for self-references (default from request) |
+| `YT_INDEXER_SCRIPT` | Path to the search script (default `./yt-episode-search.sh`) |
+| `YT_INDEXER_FALLBACK_QUERY` | Query to use when tvsearch gets no episode (default `<show> season <n>`) |
+| `YT_INDEXER_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
+| `MIN_DURATION` | Passed through to the search script |
+| `RESOLVE_TOP` | Passed through to the search script |
+
+## Setup with Prowlarr / Sonarr
+
+1. Add a **Generic Torznab** indexer in Prowlarr.
+2. URL: `http://<host>:9117/torznab`
+3. API key: `youtubeindexer` (or whatever `YT_INDEXER_API_KEY` is set to).
+4. Run: `setsid python3 /youtube-indexer/indexer.py >/tmp/indexer.log 2>&1 < /dev/null &`
+
+Each search invokes `yt-dlp`, so searches take a few seconds. Caching/Prowlarr
+sync helps keep the load down.

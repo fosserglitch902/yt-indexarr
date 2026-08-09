@@ -25,6 +25,8 @@ Options:
 
 Environment:
   MIN_DURATION   Minimum video length in seconds (default: 300)
+  RESOLVE_TOP    Number of top candidates to re-probe for resolution
+                 metadata (default: 5, 0 disables the pass)
 
 
 Examples:
@@ -52,6 +54,7 @@ MAX_RESULTS=20
 PER_QUERY=5
 DELAY=1
 MIN_DURATION=${MIN_DURATION:-300}
+RESOLVE_TOP=${RESOLVE_TOP:-5}
 JSON_OUT=false
 BEST_ONLY=false
 DOWNLOAD=false
@@ -154,6 +157,8 @@ RAW="$WORKDIR/raw.jsonl"
 DEDUP="$WORKDIR/dedup.jsonl"
 SCORED="$WORKDIR/scored.jsonl"
 SORTED="$WORKDIR/sorted.jsonl"
+RESOLVED="$WORKDIR/resolved.jsonl"
+FINAL="$WORKDIR/final.jsonl"
 ERRLOG="$WORKDIR/yt-dlp.err"
 
 
@@ -187,6 +192,7 @@ for q in "${queries[@]}"; do
         title: (.title // ""),
         url: (.webpage_url // ("https://www.youtube.com/watch?v=" + .id)),
         duration: (.duration // 0),
+        timestamp: (.timestamp // 0),
         channel: (.channel // .uploader // ""),
         views: (.view_count // 0)
       }
@@ -216,6 +222,7 @@ jq -s '
       title: .[0].title,
       url: .[0].url,
       duration: .[0].duration,
+      timestamp: .[0].timestamp,
       channel: .[0].channel,
       views: .[0].views,
       queries: ([.[].query] | unique)
@@ -402,6 +409,9 @@ jq -c \
     "clip",
     "highlights",
     "full movie",
+    "full episodes",
+    "all episodes",
+    "collection",
     "recap",
     "ending",
     "scene",
@@ -471,6 +481,7 @@ jq -c \
     title: .title,
     url: .url,
     duration: $dur,
+    timestamp: (.timestamp // 0),
     channel: .channel,
     views: .views,
     series_score: $series_score,
@@ -502,10 +513,50 @@ if [[ ! -s "$SORTED" ]]; then
 fi
 
 
+# Optional quality pass: re-probe the top RESOLVE_TOP candidates directly to
+# recover resolution and refresh the publish timestamp.  Flat playlist search
+# results never carry resolution; a full --dump-json adds it (~1-2s/video).
+# Set RESOLVE_TOP=0 to skip.
+if [[ "$RESOLVE_TOP" -gt 0 ]] && command -v xargs >/dev/null 2>&1; then
+  head -n "$RESOLVE_TOP" "$SORTED" | jq -r '.url // empty' |
+    xargs -P 4 -I{} sh -c \
+      'yt-dlp --ignore-config --dump-json --no-warnings --skip-download --retries 3 "$1" 2>/dev/null | jq -c --arg url "$1" '"'"'{url: $url, height: (.height // 0), timestamp: (.timestamp // 0)}'"'"' ' _ {} \
+      > "$RESOLVED" 2>/dev/null || true
+  jq -c -s --slurpfile meta "$RESOLVED" '
+    def rfc2822($ts):
+      if ($ts // 0) > 0 then (($ts | strftime("%a, %d %b %Y %H:%M:%S")) + " +0000") else "" end;
+    def qlabel($h):
+      if $h >= 2160 then "2160p"
+      elif $h >= 1440 then "1440p"
+      elif $h >= 1080 then "1080p"
+      elif $h >= 720 then "720p"
+      elif $h >= 480 then "480p"
+      else "360p" end;
+    ($meta | map({key: .url, value: .}) | from_entries) as $m |
+    .[] |
+    . as $item |
+    ($m[.url] // {} | {height: (.height // 0), timestamp: (.timestamp // 0)}) as $r |
+    $item +
+    {
+      resolution: (if $r.height > 0 then qlabel($r.height) else null end),
+      pub_date: rfc2822((if $r.timestamp > 0 then $r.timestamp else $item.timestamp end))
+    }
+  ' "$SORTED" > "$FINAL"
+else
+  # No resolution pass: still emit pub_date from the flat search timestamp.
+  jq -c -s '
+    def rfc2822($ts):
+      if ($ts // 0) > 0 then (($ts | strftime("%a, %d %b %Y %H:%M:%S")) + " +0000") else "" end;
+    .[] |
+    . + { pub_date: rfc2822(.timestamp) }
+  ' "$SORTED" > "$FINAL"
+fi
+
+
 BEST_JSON="$(
   jq -s '
     (map(select(.probable)) | .[0]) // .[0]
-  ' "$SORTED"
+  ' "$FINAL"
 )"
 
 
@@ -550,7 +601,7 @@ fi
 
 
 if $JSON_OUT; then
-  cat "$SORTED"
+  cat "$FINAL"
 else
   jq -r '
     [
@@ -562,7 +613,7 @@ else
       .url
     ]
     | @tsv
-  ' "$SORTED" |
+  ' "$FINAL" |
     if command -v column >/dev/null 2>&1; then
       column -t -s $'\t'
     else
