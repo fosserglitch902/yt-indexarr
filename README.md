@@ -151,6 +151,41 @@ key: `youtubeindexer` (set `YT_INDEXER_API_KEY` to change it).
 | `TVDB_CACHE_FILE` | Disk cache path (default `~/.cache/yt-indexarr/tvdb.json`) |
 | `TVDB_CACHE_TTL` | Cache TTL seconds (default 7 days) |
 
+### `qbt.py` — qBittorrent-compatible download spoofer
+
+A minimal qBittorrent Web API v2 server that pretends to be a torrent client and
+downloads the video with `yt-dlp` instead. Sonarr connects to it as a normal
+qBittorrent Download Client; adding a torrent decodes the magnet-carrier
+enclosure from the indexer (`x.ytindexer` → real YouTube URL, `dn` → release
+title) and runs `yt-dlp` on it, faking torrent progress/state so Sonarr can
+track, import and later delete the file. Magents without `x.ytindexer` are
+rejected.
+
+```sh
+python3 qbt.py
+```
+
+Run it on its **own port** (default `9177`) — separate from the indexer on
+`9117`.
+
+**Environment**
+
+| Variable | Meaning |
+| -------- | ------- |
+| `YT_QBT_HOST` | Bind host (default `127.0.0.1`) |
+| `YT_QBT_PORT` | Bind port (default `9177`) |
+| `YT_QBT_USERNAME` | Login username (default `admin`) |
+| `YT_QBT_PASSWORD` | Login password (default `adminadmin`) |
+| `YT_QBT_REQUIRE_AUTH` | Enforce login: `1`/`0` (default `1`) |
+| `YT_QBT_YTDLP` | `yt-dlp` binary (default `yt-dlp`) |
+| `YT_QBT_DL_DIR` | Save path when the client sends none (default `~/downloads`) |
+| `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
+
+Without `ffmpeg`, downloads use a single-file best format preferring `mp4`
+(`b[ext=mp4]/b`); with `ffmpeg` installed it merges best video+audio into mp4.
+
+**Endpoint coverage**: `auth/login|logout`, `app/version|webapiVersion|buildInfo|preferences|shutdown`, `torrents/info|add|delete|pause|resume|recheck|reannounce|setShareLimits|setCategory|properties|files|trackers|peers|categories|tags|createCategory|deleteCategory`, `sync/maindata`, `log/main`.
+
 ## Setup with Prowlarr / Sonarr
 
 1. Add a **Generic Torznab** indexer in Prowlarr.

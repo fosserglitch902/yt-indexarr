@@ -1,0 +1,623 @@
+#!/usr/bin/env python3
+"""qBittorrent Web API v2 spoofer that downloads YouTube via yt-dlp.
+
+Sonarr (or any qBittorrent client) connects to this on its own port (default
+9177) as if it were a qBittorrent instance.  Adding a "torrent" decodes the
+magnet carrier emitted by indexer.py:
+
+    magnet:?xt=urn:btih:<sha1(url)>&dn=<release title>&x.ytindexer=<base64url(url)>
+
+and downloads the video with yt-dlp, faking torrent progress/state so Sonarr
+can track, import and eventually delete it.  Magents without the x.ytindexer
+field are rejected (we are not a real torrent client).
+
+Run it separately from indexer.py so the two stay on different ports:
+    python3 qbt.py
+"""
+
+import base64
+import json
+import logging
+import os
+import re
+import shutil
+import secrets
+import subprocess
+import threading
+import time
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+APP_VERSION = "v4.6.7"
+WEBAPI_VERSION = "2.11.3"
+
+HOST = os.environ.get("YT_QBT_HOST", "0.0.0.0")
+PORT = int(os.environ.get("YT_QBT_PORT", "9177"))
+USERNAME = os.environ.get("YT_QBT_USERNAME", "admin")
+PASSWORD = os.environ.get("YT_QBT_PASSWORD", "adminadmin")
+REQUIRE_AUTH = os.environ.get("YT_QBT_REQUIRE_AUTH", "1").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+YTDLP = os.environ.get("YT_QBT_YTDLP", "yt-dlp")
+DL_DIR = os.environ.get("YT_QBT_DL_DIR", os.path.expanduser("~/downloads"))
+LOG_LEVEL = os.environ.get("YT_QBT_LOG_LEVEL", "INFO")
+
+log = logging.getLogger("yt-qbt")
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+_PUBLIC_PATHS = {
+    "/api/v2/auth/login",
+    "/api/v2/app/version",
+    "/api/v2/app/webapiVersion",
+}
+
+
+def _sanitize(name):
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", str(name)).strip()
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    return name or "video"
+
+
+def _parse_magnet(url):
+    """Extract btih hash, dn and x.ytindexer from a magnet, or None."""
+    if not url.lower().startswith("magnet:?"):
+        return None
+    try:
+        params = urllib.parse.parse_qs(url[len("magnet:?"):])
+    except ValueError:
+        return None
+    info = {}
+    for xt in params.get("xt", []):
+        if xt.startswith("urn:btih:"):
+            info["hash"] = xt[len("urn:btih:"):].lower()
+            break
+    if params.get("dn"):
+        info["dn"] = params["dn"][0]
+    if params.get("x.ytindexer"):
+        info["x.ytindexer"] = params["x.ytindexer"][0]
+    return info
+
+
+def _b64url_decode(value):
+    try:
+        pad = "=" * (-len(value) % 4)
+        return base64.urlsafe_b64decode(value + pad).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+class Torrent:
+    def __init__(self, hash_, name, save_path, category, tags, real_url, paused):
+        self.hash = hash_
+        self.name = name
+        self.save_path = save_path
+        self.category = category or ""
+        self.tags = tags or ""
+        self.real_url = real_url
+        self.lock = threading.Lock()
+        self.progress = 0.0
+        self.state = "pausedDL" if paused else "forcedDL"
+        self.downloaded = 0
+        self.uploaded = 0
+        self.size = 0
+        self.ratio = 0.0
+        self.added_on = int(time.time())
+        self.completion_on = 0
+        self.last_activity = self.added_on
+        self.error = None
+        self.file_path = None
+        self.proc = None
+        self._started = False
+
+
+_registry = {}
+_registry_lock = threading.Lock()
+_sids = set()
+_sid_lock = threading.Lock()
+
+
+def _issue_sid():
+    sid = secrets.token_hex(16)
+    with _sid_lock:
+        _sids.add(sid)
+    return sid
+
+
+def _valid_sid(sid):
+    if not sid:
+        return False
+    with _sid_lock:
+        return sid in _sids
+
+
+def _lookup(hash_):
+    with _registry_lock:
+        return _registry.get(hash_)
+
+
+def _download_dir(t):
+    return os.path.join(t.save_path, _sanitize(t.name))
+
+
+def _run_download(t):
+    dl_dir = _download_dir(t)
+    try:
+        os.makedirs(dl_dir, exist_ok=True)
+    except OSError as e:
+        with t.lock:
+            t.state = "error"
+            t.error = f"cannot create download dir: {e}"
+        return
+    base = _sanitize(t.name)
+    out = os.path.join(dl_dir, base + ".%(ext)s")
+    # No ffmpeg on this box -> single-file best format, prefer mp4.
+    if shutil.which("ffmpeg"):
+        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/b[ext=mp4]/b"
+        merge = ["--merge-output-format", "mp4"]
+    else:
+        fmt = "b[ext=mp4]/b"
+        merge = []
+    cmd = [YTDLP, "--newline", "--no-playlist", "-f", fmt, *merge, "-o", out,
+           "--", t.real_url]
+    log.info("download start: %s (%s)", t.hash[:8], t.name)
+    with t.lock:
+        t.state = "downloading"
+        t._started = True
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as e:
+        with t.lock:
+            t.state = "error"
+            t.error = f"cannot launch yt-dlp: {e}"
+        return
+    with t.lock:
+        t.proc = proc
+    pct = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
+    for line in proc.stdout:
+        m = pct.search(line)
+        if m:
+            with t.lock:
+                t.progress = min(0.999, float(m.group(1)) / 100.0)
+    rc = proc.wait()
+    if rc == 0:
+        found = None
+        try:
+            for fn in os.listdir(dl_dir):
+                fp = os.path.join(dl_dir, fn)
+                if os.path.isfile(fp) and fn.lower().endswith(
+                    (".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".flv", ".mov")
+                ):
+                    found = fp
+                    break
+        except OSError:
+            pass
+        with t.lock:
+            t.progress = 1.0
+            t.state = "uploading"
+            t.completion_on = int(time.time())
+            t.last_activity = t.completion_on
+            if found:
+                t.file_path = found
+                t.size = os.path.getsize(found)
+                t.downloaded = t.size
+                t.uploaded = t.size
+                t.ratio = 1.0
+        log.info("download complete: %s (%s)", t.hash[:8], found or t.name)
+    else:
+        with t.lock:
+            t.state = "error"
+            t.error = f"yt-dlp exited with code {rc}"
+        log.warning("download failed: %s (%s)", t.hash[:8], t.error)
+
+
+def _start_download(t):
+    if not t._started:
+        threading.Thread(target=_run_download, args=(t,), daemon=True).start()
+    else:
+        # resume a paused download
+        proc = t.proc
+        if proc:
+            try:
+                proc.send_signal(subprocess.signal.SIGCONT)
+            except (ProcessLookupError, OSError):
+                pass
+        with t.lock:
+            t.state = "downloading"
+
+
+def _torrent_dict(t):
+    with t.lock:
+        progress = t.progress
+        state = t.state
+        downloaded = t.downloaded
+        size = t.size
+        error = t.error
+        file_path = t.file_path
+    eta = -1 if progress >= 1.0 else 8640000
+    content_path = file_path if file_path else _download_dir(t)
+    return {
+        "added_on": t.added_on,
+        "amount_left": int(size * (1 - progress)),
+        "auto_tmm": False,
+        "availability": 1.0,
+        "category": t.category,
+        "completed": int(downloaded),
+        "completion_on": t.completion_on,
+        "content_path": content_path,
+        "dl_limit": -1,
+        "dlspeed": 0,
+        "downloaded": int(downloaded),
+        "downloaded_session": int(downloaded),
+        "eta": eta,
+        "f_l_piece_prio": False,
+        "force_start": True,
+        "hash": t.hash,
+        "infohash_v1": t.hash,
+        "infohash_v2": "",
+        "last_activity": t.last_activity,
+        "magnet_uri": f"magnet:?xt=urn:btih:{t.hash}&dn={urllib.parse.quote(t.name)}",
+        "max_ratio": -1,
+        "max_seeding_time": -1,
+        "name": t.name,
+        "num_complete": 0,
+        "num_incomplete": 0,
+        "num_leechs": 0,
+        "num_seeds": 0,
+        "priority": 0,
+        "progress": progress,
+        "ratio": t.ratio,
+        "ratio_limit": -2,
+        "save_path": _download_dir(t),
+        "seeding_time": 0 if progress < 1.0 else int(time.time() - (t.completion_on or t.added_on)),
+        "seeding_time_limit": -2,
+        "seen_complete": 0,
+        "seq_dl": False,
+        "size": int(size),
+        "state": "error" if (state == "error" or error) else state,
+        "super_seeding": False,
+        "tags": t.tags,
+        "time_active": 0,
+        "total_size": int(size),
+        "tracker": "",
+        "trackers_count": 0,
+        "up_limit": -1,
+        "uploaded": int(t.uploaded),
+        "uploaded_session": int(t.uploaded),
+        "upspeed": 0,
+    }
+
+
+def _filter_torrents(params):
+    with _registry_lock:
+        torrents = list(_registry.values())
+    hash_ = params.get("hash")
+    if hash_:
+        torrents = [t for t in torrents if t.hash == hash_]
+    hashes = params.get("hashes")
+    if hashes:
+        wanted = set(h for h in hashes.split(",") if h)
+        torrents = [t for t in torrents if t.hash in wanted]
+    category = params.get("category")
+    if category:
+        torrents = [t for t in torrents if t.category == category]
+    tag = params.get("tag")
+    if tag:
+        torrents = [t for t in torrents if tag in (t.tags or "").split(",")]
+    filt = params.get("filter")
+    if filt == "completed":
+        torrents = [t for t in torrents if t.progress >= 1.0]
+    elif filt == "downloading":
+        torrents = [t for t in torrents if t.progress < 1.0]
+    elif filt == "errored":
+        torrents = [t for t in torrents if t.state == "error"]
+    elif filt == "seeding":
+        torrents = [t for t in torrents if t.progress >= 1.0]
+    elif filt == "paused":
+        torrents = [t for t in torrents if t.state in ("pausedDL", "pausedUP")]
+    return torrents
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        log.info("%s - %s", self.client_address[0], fmt % args)
+
+    # -- helpers ---------------------------------------------------------
+
+    def _send(self, body, ctype, status=200):
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, data, status=200):
+        self._send(json.dumps(data), "application/json", status)
+
+    def _text(self, text, status=200):
+        self._send(text, "text/plain; charset=utf-8", status)
+
+    def _sid(self):
+        raw = self.headers.get("Cookie", "") or ""
+        for part in raw.split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == "SID":
+                return v
+        return ""
+
+    # -- routing ---------------------------------------------------------
+
+    def do_GET(self):
+        self._route()
+
+    def do_POST(self):
+        self._route()
+
+    def _read_form(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            return {}
+        raw = self.rfile.read(length)
+        try:
+            return urllib.parse.parse_qs(raw.decode("utf-8"))
+        except ValueError:
+            return {}
+
+    def _route(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        qs = urllib.parse.parse_qs(parsed.query)
+        form = self._read_form() if self.command == "POST" else {}
+        params = {k: (v[0] if v else "") for k, v in {**qs, **form}.items()}
+
+        if not path.startswith("/api/v2/"):
+            self._text("Not Found", 404)
+            return
+        if path not in _PUBLIC_PATHS and REQUIRE_AUTH and not _valid_sid(self._sid()):
+            self._text("Forbidden", 403)
+            return
+
+        route = path[len("/api/v2/"):]
+        try:
+            self._dispatch(route, params)
+        except BrokenPipeError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            log.exception("error handling %s", route)
+            try:
+                self._text(f"Internal error: {e}", 500)
+            except BrokenPipeError:
+                pass
+
+    def _dispatch(self, route, params):
+        if route == "auth/login":
+            if params.get("username", "") == USERNAME and params.get("password", "") == PASSWORD:
+                sid = _issue_sid()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Set-Cookie", f"SID={sid}; path=/; HttpOnly")
+                body = b"Ok."
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self._text("Fails.", 200)
+        elif route == "auth/logout":
+            self._text("Ok.", 200)
+        elif route == "app/version":
+            self._text(APP_VERSION)
+        elif route == "app/webapiVersion":
+            self._text(WEBAPI_VERSION)
+        elif route == "app/buildInfo":
+            self._json({"qt": "6.4.3", "libtorrent": "2.0.10.0",
+                        "boost": "1.82.0", "openssl": "3.1.2", "zlib": "1.2.13"})
+        elif route == "app/preferences":
+            self._json({"save_path": DL_DIR, "temp_path_enabled": False,
+                        "max_active_downloads": 5, "max_active_uploads": 5,
+                        "queueing_enabled": False})
+        elif route == "app/shutdown":
+            self._text("Ok.", 200)
+        elif route == "torrents/info":
+            self._json([_torrent_dict(t) for t in _filter_torrents(params)])
+        elif route == "torrents/add":
+            self._add(params)
+        elif route == "torrents/delete":
+            self._delete(params)
+        elif route == "torrents/pause":
+            self._pause(params, True)
+        elif route == "torrents/resume":
+            self._pause(params, False)
+        elif route == "torrents/recheck":
+            self._text("Ok.", 200)
+        elif route == "torrents/reannounce":
+            self._text("Ok.", 200)
+        elif route == "torrents/setShareLimits":
+            self._text("Ok.", 200)
+        elif route == "torrents/setCategory":
+            self._text("Ok.", 200)
+        elif route == "torrents/properties":
+            t = _lookup(params.get("hash", ""))
+            self._json(_properties(t) if t else {})
+        elif route == "torrents/files":
+            t = _lookup(params.get("hash", ""))
+            self._json(_files(t) if t else [])
+        elif route == "torrents/trackers":
+            t = _lookup(params.get("hash", ""))
+            self._json(_trackers(t) if t else [])
+        elif route == "torrents/peers":
+            self._json({"peers": [], "show_flags": False, "num_peers": 0,
+                        "num_seeds": 0, "num_leechs": 0})
+        elif route == "torrents/categories":
+            self._json({})
+        elif route == "torrents/tags":
+            self._json([])
+        elif route == "torrents/createCategory":
+            self._text("Ok.", 200)
+        elif route == "torrents/deleteCategory":
+            self._text("Ok.", 200)
+        elif route == "sync/maindata":
+            self._json({"rid": 1, "torrents": {}})
+        elif route == "log/main":
+            self._json([])
+        else:
+            self._text("Not Found", 404)
+
+    # -- actions ---------------------------------------------------------
+
+    def _add(self, params):
+        urls = (params.get("urls") or "").strip()
+        if not urls:
+            self._text("Torrent URLs are missing.", 200)
+            return
+        url = urls.splitlines()[0].strip()
+        info = _parse_magnet(url)
+        if not info:
+            self._text(f"Unsupported URL: not a magnet.", 200)
+            return
+        if not info.get("x.ytindexer"):
+            self._text("Unsupported URL: magnet is missing x.ytindexer.", 200)
+            return
+        real_url = _b64url_decode(info["x.ytindexer"])
+        if not real_url or not re.match(r"^https?://", real_url):
+            self._text("Unsupported URL: invalid x.ytindexer.", 200)
+            return
+        hash_ = info.get("hash") or secrets.token_hex(20)
+        name = info.get("dn") or hash_
+        save_path = params.get("savepath") or DL_DIR
+        paused = params.get("paused", "false").strip().lower() == "true"
+        category = params.get("category", "")
+        tags = params.get("tags", "")
+        t = Torrent(hash_, name, save_path, category, tags, real_url, paused)
+        with _registry_lock:
+            _registry[hash_] = t
+        log.info("torrent added: %s (%s) -> %s", hash_[:8], name, real_url)
+        if not paused:
+            _start_download(t)
+        self._text("Ok.", 200)
+
+    def _delete(self, params):
+        hashes = params.get("hashes", "")
+        if not hashes and params.get("hash"):
+            hashes = params["hash"]
+        delete_files = params.get("deleteFiles", "false").strip().lower() in (
+            "1", "true",
+        )
+        for h in (x for x in hashes.split(",") if x):
+            t = _lookup(h)
+            if t:
+                proc = t.proc
+                if proc:
+                    try:
+                        proc.terminate()
+                    except OSError:
+                        pass
+                if delete_files:
+                    shutil.rmtree(_download_dir(t), ignore_errors=True)
+                with _registry_lock:
+                    _registry.pop(h, None)
+                log.info("torrent deleted: %s (deleteFiles=%s)", h[:8], delete_files)
+        self._text("Ok.", 200)
+
+    def _pause(self, params, paused):
+        for h in (x for x in params.get("hashes", "").split(",") if x):
+            t = _lookup(h)
+            if not t:
+                continue
+            proc = t.proc
+            if paused:
+                if proc:
+                    try:
+                        proc.send_signal(subprocess.signal.SIGSTOP)
+                    except (ProcessLookupError, OSError):
+                        pass
+                with t.lock:
+                    t.state = "pausedDL" if t.progress < 1.0 else "pausedUP"
+            else:
+                if proc and t.state in ("pausedDL", "pausedUP"):
+                    try:
+                        proc.send_signal(subprocess.signal.SIGCONT)
+                    except (ProcessLookupError, OSError):
+                        pass
+                with t.lock:
+                    t.state = "downloading" if t.progress < 1.0 else "uploading"
+        self._text("Ok.", 200)
+
+
+def _properties(t):
+    return {
+        "save_path": _download_dir(t),
+        "creation_date": t.added_on,
+        "pieces": 0,
+        "comment": "",
+        "total_wasted": 0,
+        "total_uploaded": int(t.uploaded),
+        "total_downloaded": int(t.downloaded),
+        "download_speed": 0,
+        "upload_speed": 0,
+        "dl_limit": -1,
+        "up_limit": -1,
+        "nb_connections": 0,
+        "nb_connections_limit": -1,
+        "share_ratio": t.ratio,
+        "addition_date": t.added_on,
+        "completion_date": t.completion_on,
+        "created_by": "qBittorrent 4.6.7",
+        "avail_download": 1,
+        "avail_upload": 1,
+        "total_size": int(t.size),
+        "private": False,
+        "piece_hashes": [],
+        "last_seen": t.last_activity,
+        "qbt_seed_status": "never" if t.progress < 1.0 else "complete",
+        "reannounce": 0,
+        "eta": 8640000 if t.progress < 1.0 else -1,
+    }
+
+
+def _files(t):
+    if not t.file_path:
+        return []
+    size = int(t.size or os.path.getsize(t.file_path))
+    return [{
+        "name": os.path.basename(t.file_path),
+        "size": size,
+        "progress": t.progress,
+        "priority": 0,
+        "is_seed": bool(t.progress >= 1.0),
+        "piece_range": [0, 1],
+        "availability": 1.0,
+    }]
+
+
+def _trackers(t):
+    return []
+
+
+def main():
+    log.info(
+        "qBittorrent spoofer listening on http://%s:%d (auth: %s, yt-dlp: %s)",
+        HOST, PORT, "on" if REQUIRE_AUTH else "off", YTDLP,
+    )
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        log.info("shutting down")
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    main()
