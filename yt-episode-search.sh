@@ -56,6 +56,7 @@ PER_QUERY=5
 DELAY=1
 MIN_DURATION=${MIN_DURATION:-300}
 RESOLVE_TOP=${RESOLVE_TOP:-5}
+PLAYER_CLIENT=${PLAYER_CLIENT:-android}
 JSON_OUT=false
 BEST_ONLY=false
 DOWNLOAD=false
@@ -542,10 +543,10 @@ fi
 # results never carry resolution; a full --dump-json adds it (~1-2s/video).
 # Set RESOLVE_TOP=0 to skip.
 if [[ "$RESOLVE_TOP" -gt 0 ]] && command -v xargs >/dev/null 2>&1; then
-  head -n "$RESOLVE_TOP" "$SORTED" | jq -r '.url // empty' |
-    xargs -P 4 -I{} sh -c \
-      'yt-dlp --ignore-config --dump-json --no-warnings --skip-download --retries 3 "$1" 2>/dev/null | jq -c --arg url "$1" '"'"'{url: $url, height: (.height // 0), timestamp: (.timestamp // 0), language: (.language // "")}'"'"' ' _ {} \
-      > "$RESOLVED" 2>/dev/null || true
+    head -n "$RESOLVE_TOP" "$SORTED" | jq -r '.url // empty' |
+      xargs -P 4 -I{} sh -c \
+        'yt-dlp --ignore-config --dump-json --no-warnings --skip-download --retries 3 --extractor-args "youtube:player_client=$PLAYER_CLIENT" "$1" 2>/dev/null | jq -c --arg url "$1" '"'"'{url: $url, height: (.height // 0), timestamp: (.timestamp // 0), language: (.language // "")}'"'"' ' _ {} \
+        > "$RESOLVED" 2>/dev/null || true
   jq -c -s --slurpfile meta "$RESOLVED" '
     def rfc2822($ts):
       if ($ts // 0) > 0 then (($ts | strftime("%a, %d %b %Y %H:%M:%S")) + " +0000") else "" end;
@@ -622,6 +623,7 @@ if $DOWNLOAD; then
     --ignore-config \
     --restrict-filenames \
     --format "bv*+ba/b" \
+    --extractor-args "youtube:player_client=$PLAYER_CLIENT" \
     --output "$DOWNLOAD_DIR/%(title)s [%(id)s].%(ext)s" \
     "$url"
 

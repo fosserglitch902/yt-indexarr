@@ -39,6 +39,7 @@ REQUIRE_AUTH = os.environ.get("YT_QBT_REQUIRE_AUTH", "0").strip().lower() in (
     "1", "true", "yes", "on",
 )
 YTDLP = os.environ.get("YT_QBT_YTDLP", "yt-dlp")
+PLAYER_CLIENT = os.environ.get("YT_QBT_PLAYER_CLIENT", "android").strip()
 DL_DIR = os.environ.get("YT_QBT_DL_DIR", os.path.expanduser("~/downloads"))
 LOG_LEVEL = os.environ.get("YT_QBT_LOG_LEVEL", "INFO")
 
@@ -170,8 +171,15 @@ def _run_download(t):
     else:
         fmt = "b[ext=mp4]/b"
         merge = []
-    cmd = [YTDLP, "--newline", "--no-playlist", "-f", fmt, *merge, "-o", out,
-           "--", t.real_url]
+    # YouTube blocks some videos on yt-dlp's default player client (seen as
+    # "This video is not available"); the android client usually still serves
+    # them. Set YT_QBT_PLAYER_CLIENT to "" to disable the override.
+    extractor_args = []
+    if PLAYER_CLIENT:
+        extractor_args = ["--extractor-args",
+                          f"youtube:player_client={PLAYER_CLIENT}"]
+    cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
+           "-f", fmt, *merge, "-o", out, "--", t.real_url]
     log.info("download start: %s (%s)", t.hash[:8], t.name)
     with t.lock:
         t.state = "downloading"

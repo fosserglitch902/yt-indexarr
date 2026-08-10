@@ -40,6 +40,7 @@ Requires `yt-dlp` and `jq`. See `./yt-episode-search.sh -h` for all options.
 | -------- | ------- |
 | `MIN_DURATION` | Minimum video length in seconds (default 300) |
 | `RESOLVE_TOP`  | Number of top candidates to re-probe for resolution metadata (default 5, `0` disables) |
+| `PLAYER_CLIENT` | yt-dlp YouTube player client used for probing/downloading (default `android`; set `""` to use yt-dlp's default) |
 
 **Output fields** (JSONL, `-j`): `score`, `probable`, `has_episode`,
 `normalized_title`, `id`, `title`, `url`, `duration`, `timestamp`, `channel`,
@@ -181,11 +182,16 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_PASSWORD` | Login password (default `adminadmin`) |
 | `YT_QBT_REQUIRE_AUTH` | Enforce login: `1`/`0` (default `0` — auth off, like the indexer) |
 | `YT_QBT_YTDLP` | `yt-dlp` binary (default `yt-dlp`) |
+| `YT_QBT_PLAYER_CLIENT` | yt-dlp YouTube player client for downloads (default `android`) |
 | `YT_QBT_DL_DIR` | Save path when the client sends none (default `~/downloads`) |
 | `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
 
 Without `ffmpeg`, downloads use a single-file best format preferring `mp4`
 (`b[ext=mp4]/b`); with `ffmpeg` installed it merges best video+audio into mp4.
+YouTube blocks some videos on yt-dlp's default player client (reported as
+"This video is not available"), so downloads and the search script's quality
+probe use the `android` player client by default (`YT_QBT_PLAYER_CLIENT`, or
+`PLAYER_CLIENT` for the script); set it to empty to use yt-dlp's default.
 
 **Endpoint coverage**: `auth/login|logout`, `app/version|webapiVersion|buildInfo|preferences|shutdown`, `torrents/info|add|delete|pause|resume|recheck|reannounce|setShareLimits|topPrio|setCategory|properties|files|trackers|peers|categories|tags|createCategory|deleteCategory`, `sync/maindata`, `log/main`. Categories are kept in memory (`torrents/categories`), so Sonarr's category check/create passes. `/api/v2/app/preferences` reports `dht: true` and `queueing_enabled: true`, which Sonarr requires before it will accept a trackerless magnet and non-default priorities.
 
