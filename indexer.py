@@ -155,12 +155,25 @@ def _error_xml(message: str) -> bytes:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
-def estimate_size(duration: int) -> int:
+_RES_BITRATE = {
+    "2160": 12.0,
+    "1440": 7.0,
+    "1080": 4.5,
+    "720": 2.5,
+    "480": 1.2,
+    "360": 0.8,
+    "0": 1.5,
+}
+
+
+def estimate_size(duration: int, resolution: str = "") -> int:
     """Rough size estimate for a video of given duration in seconds.
 
-    ~1.5 Mbps video + 128 kbps audio, plus overhead.
+    Video bitrate chosen from the resolution (falling back to ~1.5 Mbps),
+    plus 128 kbps audio and overhead.
     """
-    return int(duration * ((1.5 * 1024 * 1024 / 8) + (128 * 1024 / 8)))
+    mbit = _RES_BITRATE.get(str(resolution).split("p", 1)[0], 1.5)
+    return int(duration * ((mbit * 1024 * 1024 / 8) + (128 * 1024 / 8)))
 
 
 def run_search(
@@ -210,7 +223,10 @@ def run_search(
                 "guid": f"yt-{data.get('id', '')}",
                 "url": data.get("url", ""),
                 "views": int(data.get("views", 0) or 0),
-                "size": estimate_size(int(data.get("duration", 0) or 0)),
+                "size": estimate_size(
+                    int(data.get("duration", 0) or 0),
+                    data.get("resolution") or "",
+                ),
                 "description": raw_title,
                 "resolution": data.get("resolution") or "",
                 "language": data.get("language") or "",

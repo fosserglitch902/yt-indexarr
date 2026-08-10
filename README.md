@@ -40,7 +40,7 @@ Requires `yt-dlp` and `jq`. See `./yt-episode-search.sh -h` for all options.
 | -------- | ------- |
 | `MIN_DURATION` | Minimum video length in seconds (default 300) |
 | `RESOLVE_TOP`  | Number of top candidates to re-probe for resolution metadata (default 5, `0` disables) |
-| `PLAYER_CLIENT` | yt-dlp YouTube player client used for probing/downloading (default `android`; set `""` to use yt-dlp's default) |
+| `PLAYER_CLIENT` | yt-dlp YouTube player client(s), comma-separated fallback chain (default `tv_embedded,android_vr,web,android`; set `""` to use yt-dlp's default) |
 
 **Output fields** (JSONL, `-j`): `score`, `probable`, `has_episode`,
 `normalized_title`, `id`, `title`, `url`, `duration`, `timestamp`, `channel`,
@@ -120,7 +120,10 @@ stay clean. The real YouTube title is also sent as `<description>`.
 **Torznab attributes** per item: `seeders`/`peers` (views), `size`,
 `resolution` (e.g. `1080p`, only when probed), `source` (`web`), and
 `language` (audio ISO code, e.g. `en`, only when probed). Items past the
-`RESOLVE_TOP` probe get no `resolution`/`language` attrs.
+`RESOLVE_TOP` probe get no `resolution`/`language` attrs. `size` is a
+resolution-aware estimate of the resulting file (bitrate per quality tier,
+e.g. ~0.8 Mbps at 360p up to ~12 Mbps at 2160p, plus audio), since the real
+download size is only known after yt-dlp runs.
 
 **Authentication**
 
@@ -190,7 +193,7 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_PASSWORD` | Login password (default `adminadmin`) |
 | `YT_QBT_REQUIRE_AUTH` | Enforce login: `1`/`0` (default `0` — auth off, like the indexer) |
 | `YT_QBT_YTDLP` | `yt-dlp` binary (default `yt-dlp`) |
-| `YT_QBT_PLAYER_CLIENT` | yt-dlp YouTube player client for downloads (default `android`) |
+| `YT_QBT_PLAYER_CLIENT` | yt-dlp YouTube player client(s) for downloads, comma-separated fallback chain (default `tv_embedded,android_vr,web,android`) |
 | `YT_QBT_DL_DIR` | Save path when the client sends none (default `~/downloads`) |
 | `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
 
@@ -198,8 +201,15 @@ Without `ffmpeg`, downloads use a single-file best format preferring `mp4`
 (`b[ext=mp4]/b`); with `ffmpeg` installed it merges best video+audio into mp4.
 YouTube blocks some videos on yt-dlp's default player client (reported as
 "This video is not available"), so downloads and the search script's quality
-probe use the `android` player client by default (`YT_QBT_PLAYER_CLIENT`, or
-`PLAYER_CLIENT` for the script); set it to empty to use yt-dlp's default.
+probe use a client fallback chain by default — high-resolution clients first
+(`tv_embedded`, `android_vr`, `web`), with `android` as the last resort that
+unblocks otherwise-DRM/blocked videos at up to 360p. This way Sonarr gets the
+highest quality a video offers (e.g. 1080p/4K) where available, while still
+downloading videos that only the `android` client can serve. Set
+`YT_QBT_PLAYER_CLIENT`/`PLAYER_CLIENT` to a single client or to empty for
+yt-dlp's default. The script probes download URLs anyway, so even results that
+get a quality tag during search are downloaded at max quality regardless of
+what was reported.
 
 **Endpoint coverage**: `auth/login|logout`, `app/version|webapiVersion|buildInfo|preferences|shutdown`, `torrents/info|add|delete|pause|resume|recheck|reannounce|setShareLimits|topPrio|setCategory|properties|files|trackers|peers|categories|tags|createCategory|deleteCategory`, `sync/maindata`, `log/main`. Categories are kept in memory (`torrents/categories`), so Sonarr's category check/create passes. `/api/v2/app/preferences` reports `dht: true` and `queueing_enabled: true`, which Sonarr requires before it will accept a trackerless magnet and non-default priorities.
 

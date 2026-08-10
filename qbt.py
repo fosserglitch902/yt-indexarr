@@ -39,7 +39,8 @@ REQUIRE_AUTH = os.environ.get("YT_QBT_REQUIRE_AUTH", "0").strip().lower() in (
     "1", "true", "yes", "on",
 )
 YTDLP = os.environ.get("YT_QBT_YTDLP", "yt-dlp")
-PLAYER_CLIENT = os.environ.get("YT_QBT_PLAYER_CLIENT", "android").strip()
+PLAYER_CLIENT = os.environ.get("YT_QBT_PLAYER_CLIENT",
+                               "tv_embedded,android_vr,web,android").strip()
 DL_DIR = os.environ.get("YT_QBT_DL_DIR", os.path.expanduser("~/downloads"))
 LOG_LEVEL = os.environ.get("YT_QBT_LOG_LEVEL", "INFO")
 
