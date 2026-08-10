@@ -138,8 +138,17 @@ def _valid_sid(sid):
 
 
 def _lookup(hash_):
+    hash_ = (hash_ or "").strip().lower()
+    if not hash_:
+        return None
     with _registry_lock:
-        return _registry.get(hash_)
+        t = _registry.get(hash_)
+        if t:
+            return t
+        for h, t in _registry.items():
+            if h.startswith(hash_):
+                return t
+    return None
 
 
 def _categories_dict():
@@ -561,7 +570,7 @@ class Handler(BaseHTTPRequestHandler):
                 if delete_files:
                     shutil.rmtree(_download_dir(t), ignore_errors=True)
                 with _registry_lock:
-                    _registry.pop(h, None)
+                    _registry.pop(t.hash, None)
                 log.info("torrent deleted: %s (deleteFiles=%s)", h[:8], delete_files)
         self._text("Ok.", 200)
 
