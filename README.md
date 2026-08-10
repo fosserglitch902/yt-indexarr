@@ -186,6 +186,58 @@ Without `ffmpeg`, downloads use a single-file best format preferring `mp4`
 
 **Endpoint coverage**: `auth/login|logout`, `app/version|webapiVersion|buildInfo|preferences|shutdown`, `torrents/info|add|delete|pause|resume|recheck|reannounce|setShareLimits|setCategory|properties|files|trackers|peers|categories|tags|createCategory|deleteCategory`, `sync/maindata`, `log/main`.
 
+## Docker
+
+A prebuilt image is published to **GHCR** on every push to `main` (and on
+`v*` tags), for `linux/amd64` and `linux/arm64`:
+
+```
+ghcr.io/fosser-glitch/yt-indexarr
+```
+
+The container runs **both** the indexer (`9117`) and the download spoofer
+(`9177`) from a single entrypoint, and exits if either process dies so the
+orchestrator can restart it.
+
+```sh
+docker run -d \
+  --name yt-indexarr \
+  -p 9117:9117 \
+  -p 9177:9177 \
+  -v yt-indexarr-data:/data \
+  ghcr.io/fosser-glitch/yt-indexarr:latest
+```
+
+```yaml
+# docker-compose.yml
+services:
+  yt-indexarr:
+    image: ghcr.io/fosser-glitch/yt-indexarr:latest
+    container_name: yt-indexarr
+    restart: unless-stopped
+    ports:
+      - "9117:9117"   # Torznab indexer
+      - "9177:9177"   # qBittorrent download spoofer
+    volumes:
+      - yt-indexarr-data:/data   # downloads (default /data/downloads)
+    environment:
+      - YT_QBT_USERNAME=admin
+      - YT_QBT_PASSWORD=change-me
+      # - TVDB_API_KEY=your-thetvdb-key
+      # - TVDB_PIN=your-pin   # only for user-supported keys
+      # - YT_INDEXER_BASE_URL=http://192.168.1.50:9117
+```
+
+All environment variables from the tables above apply unchanged; the image
+only changes the bind defaults to `0.0.0.0` and sets
+`YT_QBT_DL_DIR=/data/downloads` and
+`YT_INDEXER_BASE_URL=http://localhost:9117` (override the base URL to your
+host's reachable address so Prowlarr/Sonarr see a stable indexer URL).
+
+Point Prowlarr at `http://<host>:9117/torznab` (blank API key by default) and
+add a **qBittorrent** Download Client in Sonarr at `<host>:9177` with the
+spoofer's `YT_QBT_USERNAME`/`YT_QBT_PASSWORD`.
+
 ## Setup with Prowlarr / Sonarr
 
 1. Add a **Generic Torznab** indexer in Prowlarr.

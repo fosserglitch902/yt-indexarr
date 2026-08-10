@@ -1,0 +1,5 @@
+.git
+.codebase-memory
+__pycache__
+*.pyc
+plan.md
