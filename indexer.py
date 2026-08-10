@@ -112,7 +112,7 @@ def _rss_xml(items: list, self_url: str) -> bytes:
     )
     for it in items:
         item = ET.SubElement(channel, "item")
-        ET.SubElement(item, "title").text = it["title"]
+        ET.SubElement(item, "title").text = it.get("display_title") or it["title"]
         ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = it["guid"]
         ET.SubElement(item, "link").text = it["url"]
         ET.SubElement(item, "category").text = TV_CATEGORY
@@ -198,14 +198,20 @@ def run_search(
             continue
         if not data.get("probable"):
             continue
+        raw_title = data.get("title", "")
+        title = data.get("normalized_title") or raw_title
+        display_title = (
+            f"{title} - {raw_title}" if raw_title and raw_title != title else title
+        )
         items.append(
             {
-                "title": data.get("normalized_title") or data.get("title", ""),
+                "title": title,
+                "display_title": display_title,
                 "guid": f"yt-{data.get('id', '')}",
                 "url": data.get("url", ""),
                 "views": int(data.get("views", 0) or 0),
                 "size": estimate_size(int(data.get("duration", 0) or 0)),
-                "description": data.get("title", ""),
+                "description": raw_title,
                 "resolution": data.get("resolution") or "",
                 "language": data.get("language") or "",
                 "source": "web",

@@ -109,6 +109,14 @@ magnet:?xt=urn:btih:<sha1(url)>&dn=<release title>&x.ytindexer=<base64url(url)>
 
 `<link>`/`guid` keep the real YouTube URL for human use.
 
+The Torznab `<title>` is the rebuilt, Sonarr-parseable name (`Bluey S03E24
+Faceytalk WEB`) with the **real YouTube title appended** after ` - ` so it is
+visible in Sonarr's interactive search (Sonarr's release parser needs the
+season/episode token in the title to associate the result with the episode;
+without it the release is rejected as "unable to identify correct episode").
+The magnet `dn` keeps only the short parseable name so downloaded filenames
+stay clean. The real YouTube title is also sent as `<description>`.
+
 **Torznab attributes** per item: `seeders`/`peers` (views), `size`,
 `resolution` (e.g. `1080p`, only when probed), `source` (`web`), and
 `language` (audio ISO code, e.g. `en`, only when probed). Items past the
