@@ -159,7 +159,10 @@ qBittorrent Download Client; adding a torrent decodes the magnet-carrier
 enclosure from the indexer (`x.ytindexer` → real YouTube URL, `dn` → release
 title) and runs `yt-dlp` on it, faking torrent progress/state so Sonarr can
 track, import and later delete the file. Magents without `x.ytindexer` are
-rejected.
+rejected. Auth is off by default (`YT_QBT_REQUIRE_AUTH=0`), so Sonarr can
+connect without credentials — like the indexer, only run without auth on a
+trusted network. If credentials are configured, login still works and issues
+a session cookie.
 
 ```sh
 python3 qbt.py
@@ -176,7 +179,7 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_PORT` | Bind port (default `9177`) |
 | `YT_QBT_USERNAME` | Login username (default `admin`) |
 | `YT_QBT_PASSWORD` | Login password (default `adminadmin`) |
-| `YT_QBT_REQUIRE_AUTH` | Enforce login: `1`/`0` (default `1`) |
+| `YT_QBT_REQUIRE_AUTH` | Enforce login: `1`/`0` (default `0` — auth off, like the indexer) |
 | `YT_QBT_YTDLP` | `yt-dlp` binary (default `yt-dlp`) |
 | `YT_QBT_DL_DIR` | Save path when the client sends none (default `~/downloads`) |
 | `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |

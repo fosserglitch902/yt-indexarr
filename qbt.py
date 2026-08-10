@@ -35,7 +35,7 @@ HOST = os.environ.get("YT_QBT_HOST", "0.0.0.0")
 PORT = int(os.environ.get("YT_QBT_PORT", "9177"))
 USERNAME = os.environ.get("YT_QBT_USERNAME", "admin")
 PASSWORD = os.environ.get("YT_QBT_PASSWORD", "adminadmin")
-REQUIRE_AUTH = os.environ.get("YT_QBT_REQUIRE_AUTH", "1").strip().lower() in (
+REQUIRE_AUTH = os.environ.get("YT_QBT_REQUIRE_AUTH", "0").strip().lower() in (
     "1", "true", "yes", "on",
 )
 YTDLP = os.environ.get("YT_QBT_YTDLP", "yt-dlp")
