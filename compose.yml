@@ -1,0 +1,31 @@
+services:
+  yt-indexarr:
+    image: ghcr.io/fosser-glitch/yt-indexarr:latest
+    container_name: yt-indexarr
+    restart: unless-stopped
+    ports:
+      - "9117:9117"   # Torznab indexer
+      - "9177:9177"   # qBittorrent download spoofer
+    volumes:
+      - yt-indexarr-data:/data   # downloads (default /data/downloads)
+    environment:
+      - YT_QBT_USERNAME=admin
+      - YT_QBT_PASSWORD=change-me
+      # - TVDB_API_KEY=your-thetvdb-key
+      # - TVDB_PIN=your-pin   # only for user-supported keys
+      # - YT_INDEXER_BASE_URL=http://192.168.1.50:9117
+      # - YT_QBT_POT_PROVIDER=http://pot:4416   # optional SABR high-res unlock
+      # - YT_QBT_PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
+
+  # Optional: GVS PO token provider for SABR-restricted videos.
+  # Enable with: docker compose --profile pot up -d
+  pot:
+    image: brainicism/bgutil-ytdlp-pot-provider
+    container_name: bgutil-provider
+    restart: unless-stopped
+    profiles: ["pot"]
+    ports:
+      - "4416:4416"
+
+volumes:
+  yt-indexarr-data:

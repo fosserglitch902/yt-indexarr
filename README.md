@@ -40,7 +40,8 @@ Requires `yt-dlp` and `jq`. See `./yt-episode-search.sh -h` for all options.
 | -------- | ------- |
 | `MIN_DURATION` | Minimum video length in seconds (default 300) |
 | `RESOLVE_TOP`  | Number of top candidates to re-probe for resolution metadata (default 5, `0` disables) |
-| `PLAYER_CLIENT` | yt-dlp YouTube player client(s), comma-separated fallback chain (default `tv_embedded,android_vr,web,android`; set `""` to use yt-dlp's default) |
+| `PLAYER_CLIENT` | yt-dlp YouTube player client(s), comma-separated fallback chain (default `tv_embedded,android_vr,web,tv_simply,android`; set `""` to use yt-dlp's default) |
+| `POT_PROVIDER` | Optional GVS PO token provider base URL (e.g. `http://127.0.0.1:4416`); passed to the probe as `--extractor-args youtubepot-bgutilhttp:base_url=`. Empty (default) disables. Needed to unlock high-res formats on SABR-forced videos (see below). Requires the provider plugin + a Deno 2.3+ runtime with the `yt-dlp-ejs` scripts installed on the host running the probe. |
 
 **Output fields** (JSONL, `-j`): `score`, `probable`, `has_episode`,
 `normalized_title`, `id`, `title`, `url`, `duration`, `timestamp`, `channel`,
@@ -193,7 +194,8 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_PASSWORD` | Login password (default `adminadmin`) |
 | `YT_QBT_REQUIRE_AUTH` | Enforce login: `1`/`0` (default `0` — auth off, like the indexer) |
 | `YT_QBT_YTDLP` | `yt-dlp` binary (default `yt-dlp`) |
-| `YT_QBT_PLAYER_CLIENT` | yt-dlp YouTube player client(s) for downloads, comma-separated fallback chain (default `tv_embedded,android_vr,web,android`) |
+| `YT_QBT_PLAYER_CLIENT` | yt-dlp YouTube player client(s) for downloads, comma-separated fallback chain (default `tv_embedded,android_vr,web,tv_simply,android`) |
+| `YT_QBT_POT_PROVIDER` | Optional GVS PO token provider base URL for downloads (e.g. `http://127.0.0.1:4416`); empty (default) disables. Appended as `--extractor-args youtubepot-bgutilhttp:base_url=`. See SABR note below. |
 | `YT_QBT_DL_DIR` | Save path when the client sends none (default `~/downloads`) |
 | `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
 
@@ -202,14 +204,35 @@ Without `ffmpeg`, downloads use a single-file best format preferring `mp4`
 YouTube blocks some videos on yt-dlp's default player client (reported as
 "This video is not available"), so downloads and the search script's quality
 probe use a client fallback chain by default — high-resolution clients first
-(`tv_embedded`, `android_vr`, `web`), with `android` as the last resort that
-unblocks otherwise-DRM/blocked videos at up to 360p. This way Sonarr gets the
-highest quality a video offers (e.g. 1080p/4K) where available, while still
-downloading videos that only the `android` client can serve. Set
+(`tv_embedded`, `android_vr`, `web`, `tv_simply`), with `android` as the last
+resort that unblocks otherwise-DRM/blocked videos at up to 360p. This way Sonarr
+gets the highest quality a video offers (e.g. 1080p/4K) where available, while
+still downloading videos that only the `android` client can serve. Set
 `YT_QBT_PLAYER_CLIENT`/`PLAYER_CLIENT` to a single client or to empty for
 yt-dlp's default. The script probes download URLs anyway, so even results that
 get a quality tag during search are downloaded at max quality regardless of
 what was reported.
+
+**SABR-restricted videos.** Some videos (YouTube experiment, see
+[yt-dlp#12482](https://github.com/yt-dlp/yt-dlp/issues/12482)) serve high-res
+formats only over SABR: every client except `tv_simply` exposes just a 360p
+format, and `tv_simply`'s high-res formats lack URLs until a GVS PO token is
+presented. Without a PO provider such videos download at 360p (still
+functional). To unlock their full quality, run the optional
+[`brainicism/bgutil-ytdlp-pot-provider`](https://hub.docker.com/r/brainicism/bgutil-ytdlp-pot-provider)
+container:
+
+```sh
+docker run -d --name bgutil-provider --init -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider
+```
+
+Then set `YT_QBT_POT_PROVIDER=http://127.0.0.1:4416` (qbt.py) and
+`POT_PROVIDER=http://127.0.0.1:4416` (search script). The host also needs the
+`bgutil-ytdlp-pot-provider` yt-dlp plugin and a **Deno 2.3+** runtime with the
+`yt-dlp-ejs` challenge scripts installed (deno is yt-dlp's preferred runtime;
+node must be v22+). With both, `tv_simply` downloads the example SABR video
+`zIoxr8k3rh0` at 1920x1080 instead of 360p. The provider stays fully optional —
+unset env vars leave current behavior unchanged.
 
 **Endpoint coverage**: `auth/login|logout`, `app/version|webapiVersion|buildInfo|preferences|shutdown`, `torrents/info|add|delete|pause|resume|recheck|reannounce|setShareLimits|topPrio|setCategory|properties|files|trackers|peers|categories|tags|createCategory|deleteCategory`, `sync/maindata`, `log/main`. Categories are kept in memory (`torrents/categories`), so Sonarr's category check/create passes. `/api/v2/app/preferences` reports `dht: true` and `queueing_enabled: true`, which Sonarr requires before it will accept a trackerless magnet and non-default priorities.
 
@@ -253,6 +276,17 @@ services:
       # - TVDB_API_KEY=your-thetvdb-key
       # - TVDB_PIN=your-pin   # only for user-supported keys
       # - YT_INDEXER_BASE_URL=http://192.168.1.50:9117
+      # - YT_QBT_POT_PROVIDER=http://pot:4416   # optional SABR high-res unlock
+      # - YT_QBT_PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
+  # Optional: GVS PO token provider for SABR-restricted videos (see above).
+  # Enable with: docker compose --profile pot up -d
+  pot:
+    image: brainicism/bgutil-ytdlp-pot-provider
+    container_name: bgutil-provider
+    restart: unless-stopped
+    profiles: ["pot"]
+    ports:
+      - "4416:4416"
 ```
 
 All environment variables from the tables above apply unchanged; the image

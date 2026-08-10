@@ -56,8 +56,11 @@ PER_QUERY=5
 DELAY=1
 MIN_DURATION=${MIN_DURATION:-300}
 RESOLVE_TOP=${RESOLVE_TOP:-5}
-PLAYER_CLIENT=${PLAYER_CLIENT:-tv_embedded,android_vr,web,android}
+PLAYER_CLIENT=${PLAYER_CLIENT:-tv_embedded,android_vr,web,tv_simply,android}
 export PLAYER_CLIENT
+# Optional bgutil PO token provider URL (e.g. http://pot:4416). Empty disables.
+POT_PROVIDER=${POT_PROVIDER:-}
+export POT_PROVIDER
 JSON_OUT=false
 BEST_ONLY=false
 DOWNLOAD=false
@@ -546,7 +549,7 @@ fi
 if [[ "$RESOLVE_TOP" -gt 0 ]] && command -v xargs >/dev/null 2>&1; then
     head -n "$RESOLVE_TOP" "$SORTED" | jq -r '.url // empty' |
       xargs -P 4 -I{} sh -c \
-        'yt-dlp --ignore-config --dump-json --no-warnings --skip-download --retries 3 --extractor-args "youtube:player_client=$PLAYER_CLIENT" "$1" 2>/dev/null | jq -c --arg url "$1" '"'"'{url: $url, height: (.height // 0), timestamp: (.timestamp // 0), language: (.language // "")}'"'"' ' _ {} \
+        'yt-dlp --ignore-config --dump-json --no-warnings --skip-download --retries 3 --extractor-args "youtube:player_client=$PLAYER_CLIENT" $(if [ -n "$POT_PROVIDER" ]; then printf -- "--extractor-args youtubepot-bgutilhttp:base_url=$POT_PROVIDER"; fi) "$1" 2>/dev/null | jq -c --arg url "$1" '"'"'{url: $url, height: (.height // 0), timestamp: (.timestamp // 0), language: (.language // "")}'"'"' ' _ {} \
         > "$RESOLVED" 2>/dev/null || true
   jq -c -s --slurpfile meta "$RESOLVED" '
     def rfc2822($ts):
