@@ -115,6 +115,8 @@ class Torrent:
 
 _registry = {}
 _registry_lock = threading.Lock()
+_categories = {}
+_categories_lock = threading.Lock()
 _sids = set()
 _sid_lock = threading.Lock()
 
@@ -136,6 +138,14 @@ def _valid_sid(sid):
 def _lookup(hash_):
     with _registry_lock:
         return _registry.get(hash_)
+
+
+def _categories_dict():
+    with _categories_lock:
+        return {
+            name: {"name": name, "savePath": save_path, "error": ""}
+            for name, save_path in _categories.items()
+        }
 
 
 def _download_dir(t):
@@ -425,9 +435,22 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"qt": "6.4.3", "libtorrent": "2.0.10.0",
                         "boost": "1.82.0", "openssl": "3.1.2", "zlib": "1.2.13"})
         elif route == "app/preferences":
-            self._json({"save_path": DL_DIR, "temp_path_enabled": False,
-                        "max_active_downloads": 5, "max_active_uploads": 5,
-                        "queueing_enabled": False})
+            self._json({
+                "save_path": DL_DIR,
+                "temp_path_enabled": False,
+                "dht": True,
+                "pex": True,
+                "queueing_enabled": True,
+                "max_active_downloads": 5,
+                "max_active_uploads": 5,
+                "max_ratio_enabled": False,
+                "max_ratio": 0,
+                "max_seeding_time_enabled": False,
+                "max_seeding_time": 0,
+                "max_inactive_seeding_time_enabled": False,
+                "max_inactive_seeding_time": 0,
+                "max_ratio_act": 0,
+            })
         elif route == "app/shutdown":
             self._text("Ok.", 200)
         elif route == "torrents/info":
@@ -446,8 +469,10 @@ class Handler(BaseHTTPRequestHandler):
             self._text("Ok.", 200)
         elif route == "torrents/setShareLimits":
             self._text("Ok.", 200)
-        elif route == "torrents/setCategory":
+        elif route == "torrents/topPrio":
             self._text("Ok.", 200)
+        elif route == "torrents/setCategory":
+            self._set_category(params)
         elif route == "torrents/properties":
             t = _lookup(params.get("hash", ""))
             self._json(_properties(t) if t else {})
@@ -461,13 +486,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"peers": [], "show_flags": False, "num_peers": 0,
                         "num_seeds": 0, "num_leechs": 0})
         elif route == "torrents/categories":
-            self._json({})
+            self._json(_categories_dict())
         elif route == "torrents/tags":
             self._json([])
         elif route == "torrents/createCategory":
-            self._text("Ok.", 200)
+            self._create_category(params)
         elif route == "torrents/deleteCategory":
-            self._text("Ok.", 200)
+            self._delete_category(params)
         elif route == "sync/maindata":
             self._json({"rid": 1, "torrents": {}})
         elif route == "log/main":
@@ -529,6 +554,33 @@ class Handler(BaseHTTPRequestHandler):
                 with _registry_lock:
                     _registry.pop(h, None)
                 log.info("torrent deleted: %s (deleteFiles=%s)", h[:8], delete_files)
+        self._text("Ok.", 200)
+
+    def _set_category(self, params):
+        cat = params.get("category", "")
+        for h in (x for x in params.get("hashes", "").split(",") if x):
+            t = _lookup(h)
+            if t:
+                with t.lock:
+                    t.category = cat
+        if cat:
+            with _categories_lock:
+                _categories.setdefault(cat, "")
+        self._text("Ok.", 200)
+
+    def _create_category(self, params):
+        name = params.get("category", "").strip()
+        if name:
+            with _categories_lock:
+                _categories[name] = params.get("savePath", "") or ""
+            log.info("category created: %s", name)
+        self._text("Ok.", 200)
+
+    def _delete_category(self, params):
+        name = params.get("category", "").strip()
+        with _categories_lock:
+            _categories.pop(name, None)
+        log.info("category deleted: %s", name or "(none)")
         self._text("Ok.", 200)
 
     def _pause(self, params, paused):
