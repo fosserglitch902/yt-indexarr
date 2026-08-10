@@ -249,6 +249,11 @@ The container runs **both** the indexer (`9117`) and the download spoofer
 (`9177`) from a single entrypoint, and exits if either process dies so the
 orchestrator can restart it.
 
+The image ships the `yt-dlp-ejs` challenge scripts, the
+`bgutil-ytdlp-pot-provider` plugin, and the Deno JS runtime, so the optional
+PO-token path works out of the box — no host-side installs. It is inert unless
+you set `YT_QBT_POT_PROVIDER`/`POT_PROVIDER`.
+
 ```sh
 docker run -d \
   --name yt-indexarr \
