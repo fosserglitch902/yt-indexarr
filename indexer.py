@@ -115,6 +115,9 @@ def _rss_xml(items: list, self_url: str) -> bytes:
         ET.SubElement(item, "title").text = it.get("display_title") or it["title"]
         ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = it["guid"]
         ET.SubElement(item, "link").text = it["url"]
+        # Sonarr renders the release title as a clickable link to this
+        # (Torznab GetInfoUrl uses <comments>); point it at the YouTube video.
+        ET.SubElement(item, "comments").text = it["url"]
         ET.SubElement(item, "category").text = TV_CATEGORY
         ET.SubElement(item, "pubDate").text = it.get("pub_date") or _now_rfc2822()
         desc = it.get("description", "")
@@ -273,7 +276,9 @@ def handle_tvsearch(params: dict, self_url: str) -> bytes:
             series = os.environ.get("YT_INDEXER_FALLBACK_QUERY", "tv episode")
 
     # Localized title matching.  Sonarr's per-indexer "Additional parameters"
-    # can send language=fr,en; TVDB provides localized episode titles when
+    # can send `&language=fr,en` (the value is appended to the search URL, so
+    # it must start with `&`; Sonarr/Prowlarr enforce `(&.+?=.+?)+`).  TVDB
+    # provides localized episode titles when
     # TVDB_API_KEY is configured, otherwise we fall back to the TVMaze
     # (English) title.  Failures degrade gracefully to number-only search.
     languages = _parse_languages(params)

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """TheTVDB v4 localized episode-title lookup.
 
-Sonarr's per-indexer "Additional parameters" can send `language=fr,en` so the
-indexer knows which localized episode titles to match against on YouTube.
+Sonarr's per-indexer "Additional parameters" can send `&language=fr,en` (the
+value is appended to the search URL, so it must start with `&`; Sonarr/Prowlarr
+enforce `(&.+?=.+?)+`) so the indexer knows which localized episode titles to
+match against on YouTube.
 TVMaze has no episode translations, so localized titles come from TheTVDB v4
 (the same source Sonarr uses).  When TVDB_API_KEY is not configured, callers
 fall back to the TVMaze (English) lookup.

@@ -88,9 +88,16 @@ TVMaze has no episode translations, so localized titles come from **TheTVDB v4**
 (the same source Sonarr uses) when `TVDB_API_KEY` is set — otherwise the lookup
 falls back to TVMaze (English). Sonarr does not transmit a series' language
 over Torznab, so the wanted language(s) are sent via the `language` (or `lang`)
-query param, comma-separated ISO-639-1 codes (max **2**, e.g. `language=fr,en`).
+query param, comma-separated ISO-639-1 codes (max **2**, e.g. `&language=fr,en`).
 In Sonarr, add that to the indexer's **Additional parameters** field
 (Settings → Indexers → the yt-indexarr indexer → Additional parameters).
+
+The value must **start with `&`** — Sonarr (and Prowlarr) append it to the
+search URL verbatim and validate it against the regex `(&.+?=.+?)+`, so
+`language=fr,en` is rejected while `&language=fr,en` passes. If the indexer is
+managed through **Prowlarr** and synced to Sonarr, set the same `&language=...`
+value in Prowlarr (Settings → Indexers → this indexer → Advanced → Additional
+parameters) instead — Prowlarr pushes that field to Sonarr on sync for Torznab.
 
 Titles are matched in the requested order plus English as a safety net; the
 search script accepts repeated `-t` flags and scores against any of them. If
@@ -108,7 +115,10 @@ magnet:?xt=urn:btih:<sha1(url)>&dn=<release title>&x.ytindexer=<base64url(url)>
 - `dn` — the release title (used as the downloaded file name, Sonarr-parseable)
 - `x.ytindexer` — base64url of the real `https://www.youtube.com/watch?v=...`
 
-`<link>`/`guid` keep the real YouTube URL for human use.
+`<link>`/`guid` keep the real YouTube URL; the Torznab `<comments>` element
+carries the same URL so Sonarr's "More info" / the release title in interactive
+search open the YouTube video (Sonarr's Torznab parser uses `<comments>` as the
+info/comment URL and trims a trailing `#comments`).
 
 The Torznab `<title>` is the rebuilt, Sonarr-parseable name (`Bluey S03E24
 Faceytalk WEB`) with the **real YouTube title appended** after ` - ` so it is
