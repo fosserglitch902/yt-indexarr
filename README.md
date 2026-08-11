@@ -220,9 +220,10 @@ what was reported.
 formats only over SABR: every client except `tv_simply` exposes just a 360p
 format, and `tv_simply`'s high-res formats lack URLs until a GVS PO token is
 presented. Without a PO provider such videos download at 360p (still
-functional). To unlock their full quality, run the optional
+functional). To unlock their full quality, run the
 [`brainicism/bgutil-ytdlp-pot-provider`](https://hub.docker.com/r/brainicism/bgutil-ytdlp-pot-provider)
-container:
+container — the [`compose.yml`](./compose.yml) in this repo starts it by
+default (it is also what makes the bundled deno/yt-dlp-ejs useful):
 
 ```sh
 docker run -d --name bgutil-provider --init -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider
@@ -233,8 +234,9 @@ Then set `YT_QBT_POT_PROVIDER=http://127.0.0.1:4416` (qbt.py) and
 `bgutil-ytdlp-pot-provider` yt-dlp plugin and a **Deno 2.3+** runtime with the
 `yt-dlp-ejs` challenge scripts installed (deno is yt-dlp's preferred runtime;
 node must be v22+). With both, `tv_simply` downloads the example SABR video
-`zIoxr8k3rh0` at 1920x1080 instead of 360p. The provider stays fully optional —
-unset env vars leave current behavior unchanged.
+`zIoxr8k3rh0` at 1920x1080 instead of 360p. The provider stays optional — unset
+the env vars (or drop the `pot` service) and behavior is unchanged, with such
+videos downloading at 360p.
 
 **Endpoint coverage**: `auth/login|logout`, `app/version|webapiVersion|buildInfo|preferences|shutdown`, `torrents/info|add|delete|pause|resume|recheck|reannounce|setShareLimits|topPrio|setCategory|properties|files|trackers|peers|categories|tags|createCategory|deleteCategory`, `sync/maindata`, `log/main`. Categories are kept in memory (`torrents/categories`), so Sonarr's category check/create passes. `/api/v2/app/preferences` reports `dht: true` and `queueing_enabled: true`, which Sonarr requires before it will accept a trackerless magnet and non-default priorities.
 
@@ -252,9 +254,9 @@ The container runs **both** the indexer (`9117`) and the download spoofer
 orchestrator can restart it.
 
 The image ships the `yt-dlp-ejs` challenge scripts, the
-`bgutil-ytdlp-pot-provider` plugin, and the Deno JS runtime, so the optional
-PO-token path works out of the box — no host-side installs. It is inert unless
-you set `YT_QBT_POT_PROVIDER`/`POT_PROVIDER`.
+`bgutil-ytdlp-pot-provider` plugin, and the Deno JS runtime, so the PO-token
+path works out of the box — no host-side installs. It is inert unless
+`YT_QBT_POT_PROVIDER`/`POT_PROVIDER` point at a running provider.
 
 ```sh
 docker run -d \
@@ -290,18 +292,16 @@ services:
       - YT_QBT_PASSWORD=change-me
       - YT_QBT_REQUIRE_AUTH=0
       - YT_QBT_DL_DIR=/data/downloads
-      # Optional: SABR high-res unlock via the pot service below
-      # - YT_QBT_POT_PROVIDER=http://pot:4416
-      # - POT_PROVIDER=http://pot:4416
+      - YT_QBT_POT_PROVIDER=http://pot:4416
+      - POT_PROVIDER=http://pot:4416
       # - TVDB_API_KEY=your-thetvdb-key   # localized episode titles
       # - TVDB_PIN=your-pin               # only for user-supported keys
-  # Optional: GVS PO token provider for SABR-restricted videos (see above).
-  # Enable with: docker compose --profile pot up -d
+  # GVS PO token provider for SABR-restricted videos (see above). Disable by
+  # removing it and clearing the two POT_PROVIDER vars above.
   pot:
     image: brainicism/bgutil-ytdlp-pot-provider
     container_name: bgutil-provider
     restart: unless-stopped
-    profiles: ["pot"]
     ports:
       - "4416:4416"
 volumes:

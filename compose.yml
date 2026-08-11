@@ -23,7 +23,7 @@ services:
       # - MIN_DURATION=300
       # - RESOLVE_TOP=5
       # - PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
-      # - POT_PROVIDER=http://pot:4416   # optional SABR high-res unlock
+      - POT_PROVIDER=http://pot:4416
       # --- download spoofer (qbt.py) ---
       - YT_QBT_HOST=0.0.0.0
       - YT_QBT_PORT=9177
@@ -33,7 +33,7 @@ services:
       - YT_QBT_DL_DIR=/data/downloads
       # - YT_QBT_YTDLP=yt-dlp
       # - YT_QBT_PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
-      # - YT_QBT_POT_PROVIDER=http://pot:4416
+      - YT_QBT_POT_PROVIDER=http://pot:4416
       # - YT_QBT_LOG_LEVEL=INFO
       # --- episode-title lookup: TVMaze ---
       # - TVMAZE_API=https://api.tvmaze.com
@@ -49,13 +49,13 @@ services:
       # - TVDB_CACHE_FILE=/data/cache/tvdb.json
       # - TVDB_CACHE_TTL=604800
 
-  # Optional: GVS PO token provider for SABR-restricted videos (see README).
-  # Enable with: docker compose --profile pot up -d
+  # GVS PO token provider for SABR-restricted videos (see README). Bundled
+  # deno/yt-dlp-ejs make this the default so high-res formats are unlocked.
+  # Disable by removing it and clearing YT_QBT_POT_PROVIDER/POT_PROVIDER above.
   pot:
     image: brainicism/bgutil-ytdlp-pot-provider
     container_name: bgutil-provider
     restart: unless-stopped
-    profiles: ["pot"]
     ports:
       - "4416:4416"
 
