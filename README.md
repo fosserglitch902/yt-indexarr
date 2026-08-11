@@ -141,17 +141,19 @@ key: `youtubeindexer` (set `YT_INDEXER_API_KEY` to change it).
 
 | Variable | Meaning |
 | -------- | ------- |
-| `YT_INDEXER_HOST` | Bind host (default `127.0.0.1`) |
+| `YT_INDEXER_HOST` | Bind host (default `0.0.0.0`) |
 | `YT_INDEXER_PORT` | Bind port (default `9117`) |
 | `YT_INDEXER_API_KEY` | API key (default `youtubeindexer`) |
 | `YT_INDEXER_REQUIRE_KEY` | Enforce the API key: `1`/`0` (default `0` — auth off) |
-| `YT_INDEXER_NAME` | Indexer name reported in caps (default `yt-indexarr`) |
-| `YT_INDEXER_BASE_URL` | Public base URL for self-references (default from request) |
+| `YT_INDEXER_INDEXER_NAME` | Indexer name reported in caps (default `YouTube`) |
+| `YT_INDEXER_BASE_URL` | Public base URL for self-references (default `http://localhost:9117`) |
 | `YT_INDEXER_SCRIPT` | Path to the search script (default `./yt-episode-search.sh`) |
-| `YT_INDEXER_FALLBACK_QUERY` | Query to use when tvsearch gets no episode (default `<show> season <n>`) |
+| `YT_INDEXER_FALLBACK_QUERY` | Query used when the series name can't be resolved (default `tv episode`) |
 | `YT_INDEXER_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
 | `MIN_DURATION` | Passed through to the search script |
 | `RESOLVE_TOP` | Passed through to the search script |
+| `PLAYER_CLIENT` | Passed through to the search script (see the script env table) |
+| `POT_PROVIDER` | Passed through to the search script (see the script env table) |
 | `TVMAZE_API` | TVMaze base URL (default `https://api.tvmaze.com`) |
 | `TVMAZE_TIMEOUT` | Per-lookup timeout seconds (default 5) |
 | `TVMAZE_CACHE_FILE` | Disk cache path (default `~/.cache/yt-indexarr/tvmaze.json`) |
@@ -188,7 +190,7 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 
 | Variable | Meaning |
 | -------- | ------- |
-| `YT_QBT_HOST` | Bind host (default `127.0.0.1`) |
+| `YT_QBT_HOST` | Bind host (default `0.0.0.0`) |
 | `YT_QBT_PORT` | Bind port (default `9177`) |
 | `YT_QBT_USERNAME` | Login username (default `admin`) |
 | `YT_QBT_PASSWORD` | Login password (default `adminadmin`) |
@@ -264,7 +266,7 @@ docker run -d \
 ```
 
 ```yaml
-# docker-compose.yml
+# docker-compose.yml (see ./compose.yml in this repo for the full file)
 services:
   yt-indexarr:
     image: ghcr.io/fosser-glitch/yt-indexarr:latest
@@ -276,13 +278,23 @@ services:
     volumes:
       - yt-indexarr-data:/data   # downloads (default /data/downloads)
     environment:
+      - YT_INDEXER_HOST=0.0.0.0
+      - YT_INDEXER_PORT=9117
+      - YT_INDEXER_API_KEY=youtubeindexer
+      - YT_INDEXER_REQUIRE_KEY=0
+      - YT_INDEXER_INDEXER_NAME=YouTube
+      - YT_INDEXER_BASE_URL=http://localhost:9117
+      - YT_QBT_HOST=0.0.0.0
+      - YT_QBT_PORT=9177
       - YT_QBT_USERNAME=admin
       - YT_QBT_PASSWORD=change-me
-      # - TVDB_API_KEY=your-thetvdb-key
-      # - TVDB_PIN=your-pin   # only for user-supported keys
-      # - YT_INDEXER_BASE_URL=http://192.168.1.50:9117
-      # - YT_QBT_POT_PROVIDER=http://pot:4416   # optional SABR high-res unlock
-      # - YT_QBT_PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
+      - YT_QBT_REQUIRE_AUTH=0
+      - YT_QBT_DL_DIR=/data/downloads
+      # Optional: SABR high-res unlock via the pot service below
+      # - YT_QBT_POT_PROVIDER=http://pot:4416
+      # - POT_PROVIDER=http://pot:4416
+      # - TVDB_API_KEY=your-thetvdb-key   # localized episode titles
+      # - TVDB_PIN=your-pin               # only for user-supported keys
   # Optional: GVS PO token provider for SABR-restricted videos (see above).
   # Enable with: docker compose --profile pot up -d
   pot:
@@ -292,13 +304,16 @@ services:
     profiles: ["pot"]
     ports:
       - "4416:4416"
+volumes:
+  yt-indexarr-data:
 ```
 
-All environment variables from the tables above apply unchanged; the image
-only changes the bind defaults to `0.0.0.0` and sets
-`YT_QBT_DL_DIR=/data/downloads` and
-`YT_INDEXER_BASE_URL=http://localhost:9117` (override the base URL to your
-host's reachable address so Prowlarr/Sonarr see a stable indexer URL).
+All environment variables from the tables above apply unchanged; both services
+already bind `0.0.0.0` by default. The image additionally sets
+`YT_QBT_DL_DIR=/data/downloads` and `YT_INDEXER_BASE_URL=http://localhost:9117`
+(override the base URL to your host's reachable address so Prowlarr/Sonarr see
+a stable indexer URL). The [`compose.yml`](./compose.yml) in this repo lists
+every supported variable.
 
 Point Prowlarr at `http://<host>:9117/torznab` (blank API key by default) and
 add a **qBittorrent** Download Client in Sonarr at `<host>:9177` with the
@@ -315,3 +330,28 @@ spoofer's `YT_QBT_USERNAME`/`YT_QBT_PASSWORD`.
 
 Each search invokes `yt-dlp`, so searches take a few seconds. Caching/Prowlarr
 sync helps keep the load down.
+
+### Suggested Sonarr configuration
+
+This indexer only ever returns YouTube videos, and every search runs one or more
+`yt-dlp` invocations — so treat it as a *manual, targeted* source, not something
+Sonarr should poll in the background:
+
+- **Indexer — sync profile: Interactive Search only.** In Sonarr
+  (Settings → Indexers → this indexer), enable **Interactive Search** and
+  disable **RSS** and **Automatic Search**. In Prowlarr, set the indexer's
+  **sync profile** the same way (or mark the app sync as manual-only). This
+  keeps Sonarr from auto-grabbing and from polling the indexer on every
+  episode's RSS/automatic pass, which would run yt-dlp for nothing.
+- **Use it only with this repo's downloader.** The enclosures are fake magnets
+  that only the included qBittorrent spoofer (`qbt.py`, `:9177`) can decode —
+  a real download client cannot fetch them. Only add this indexer where the
+  spoofer is configured as the download client; don't point it at a separate
+  torrent/Usenet setup.
+- **Downloader — lower priority than the main one.** Add the spoofer as a
+  **qBittorrent** Download Client in Sonarr (Settings → Download Clients) at
+  `<host>:9177` with the spoofer's `YT_QBT_USERNAME`/`YT_QBT_PASSWORD`. Set its
+  **Priority** to a lower value than your main download client (priority range
+  is **1–50, where 1 is the default/highest and 50 is the lowest**), e.g.
+  `20`. Your main client keeps handling normal releases; the spoofer only picks
+  up the YouTube grabs that fall through to it.

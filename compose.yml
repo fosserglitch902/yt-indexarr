@@ -9,15 +9,47 @@ services:
     volumes:
       - yt-indexarr-data:/data   # downloads (default /data/downloads)
     environment:
+      # --- indexer (indexer.py) ---
+      - YT_INDEXER_HOST=0.0.0.0
+      - YT_INDEXER_PORT=9117
+      - YT_INDEXER_API_KEY=youtubeindexer
+      - YT_INDEXER_REQUIRE_KEY=0
+      - YT_INDEXER_INDEXER_NAME=YouTube
+      - YT_INDEXER_BASE_URL=http://localhost:9117
+      # - YT_INDEXER_SCRIPT=/app/yt-episode-search.sh
+      # - YT_INDEXER_FALLBACK_QUERY=tv episode
+      # - YT_INDEXER_LOG_LEVEL=INFO
+      # --- search script (yt-episode-search.sh) ---
+      # - MIN_DURATION=300
+      # - RESOLVE_TOP=5
+      # - PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
+      # - POT_PROVIDER=http://pot:4416   # optional SABR high-res unlock
+      # --- download spoofer (qbt.py) ---
+      - YT_QBT_HOST=0.0.0.0
+      - YT_QBT_PORT=9177
       - YT_QBT_USERNAME=admin
       - YT_QBT_PASSWORD=change-me
+      - YT_QBT_REQUIRE_AUTH=0
+      - YT_QBT_DL_DIR=/data/downloads
+      # - YT_QBT_YTDLP=yt-dlp
+      # - YT_QBT_PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
+      # - YT_QBT_POT_PROVIDER=http://pot:4416
+      # - YT_QBT_LOG_LEVEL=INFO
+      # --- episode-title lookup: TVMaze ---
+      # - TVMAZE_API=https://api.tvmaze.com
+      # - TVMAZE_TIMEOUT=5
+      # - TVMAZE_CACHE_FILE=/data/cache/tvmaze.json
+      # - TVMAZE_CACHE_TTL=604800
+      # --- episode-title lookup: TheTVDB (localized titles) ---
       # - TVDB_API_KEY=your-thetvdb-key
       # - TVDB_PIN=your-pin   # only for user-supported keys
-      # - YT_INDEXER_BASE_URL=http://192.168.1.50:9117
-      # - YT_QBT_POT_PROVIDER=http://pot:4416   # optional SABR high-res unlock
-      # - YT_QBT_PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
+      # - TVDB_API=https://api4.thetvdb.com/v4
+      # - TVDB_TIMEOUT=5
+      # - TVDB_TOKEN_FILE=/data/cache/tvdb_token.json
+      # - TVDB_CACHE_FILE=/data/cache/tvdb.json
+      # - TVDB_CACHE_TTL=604800
 
-  # Optional: GVS PO token provider for SABR-restricted videos.
+  # Optional: GVS PO token provider for SABR-restricted videos (see README).
   # Enable with: docker compose --profile pot up -d
   pot:
     image: brainicism/bgutil-ytdlp-pot-provider
