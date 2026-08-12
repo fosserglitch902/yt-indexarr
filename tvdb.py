@@ -273,3 +273,40 @@ def resolve_titles(tvdbid, season, number, languages):
     if default and default not in titles:
         titles.append(default)
     return titles
+
+
+def season_episodes(tvdbid, season):
+    """Return {episode_number: name} for a whole season, cached; {} on failure.
+
+    Used by the download-client spoof to map playlist videos to episodes when
+    renaming a downloaded season pack.  Returns {} when TVDB is not configured
+    or the season cannot be found, so callers can fall back to playlist order.
+    """
+    if not enabled():
+        return {}
+    key = f"se:{(tvdbid or '').strip()}:{season}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    result = {}
+    page = 0
+    while page < 50:
+        data = _request(
+            f"/series/{tvdbid}/episodes/default?page={page}&season={season}"
+        )
+        if not data:
+            break
+        episodes = (data.get("data") or {}).get("episodes") or []
+        if not episodes:
+            break
+        for ep in episodes:
+            num = ep.get("number")
+            name = ep.get("name")
+            if num is not None and name:
+                result[int(num)] = name
+        links = data.get("links") or {}
+        if not links.get("next"):
+            break
+        page += 1
+    _cache_set(key, result)
+    return result

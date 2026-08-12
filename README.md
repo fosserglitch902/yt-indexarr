@@ -23,6 +23,7 @@ Requires `yt-dlp` and `jq`. See `./yt-episode-search.sh -h` for all options.
 | `-s`  | Series / show name (required) |
 | `-S`  | Season number |
 | `-E`  | Episode number |
+| `-P`  | Playlist/season mode: search for whole-season playlists instead of a single episode (skips the `-E` requirement; implies the playlists-only YouTube filter) |
 | `-t`  | Episode title |
 | `-n`  | Max results to return (default 20) |
 | `-p`  | Results per yt-dlp query (default 5) |
@@ -70,8 +71,31 @@ python3 indexer.py
 
 - `?t=caps` — capabilities
 - `?t=tvsearch&q=<show>&season=<n>&ep=<n>[&tvdbid=<id>]` — episode search
+- `?t=tvsearch&q=<show>&season=<n>[&tvdbid=<id>]` — full-season search
+  (interactive; see below)
 - `?t=search&q=<term>` — generic search
 - `?t=rss` — latest matches
+
+**Full-season search (season packs)**
+
+Sonarr sends `t=tvsearch&season=N` *without* `ep` for a whole-season search
+(the `AddTvIdPageableRequests` / interactive "search for all episodes" flow).
+`indexer.py` answers with **season packs**: it searches YouTube for playlists
+matching `"<show> season N"` and returns each playlist as one release whose
+title is `<Series> S0<N> WEB - <real playlist title>`, with the playlist's
+video count folded into the size estimate. When `q` is missing, the series
+name is resolved from `tvdbid` via TVMaze, matching the single-episode path.
+
+Each season-pack enclosure is a magnet that carries the *playlist* URL (not a
+single video) plus the TVDB series id so the download spoofer can map videos
+to episodes:
+
+```
+magnet:?xt=urn:btih:<sha1(url)>&dn=<release title>&x.ytindexer=<base64url(playlist)>&x.ytindexertvdbid=<tvdbid>
+```
+
+`x.ytindexertvdbid` is present only on season-pack items. The single-episode
+(`ep=<n>`) flow is unchanged.
 
 **Episode-title lookup (TVMaze + TheTVDB)**
 
@@ -224,6 +248,25 @@ still downloading videos that only the `android` client can serve. Set
 yt-dlp's default. The script probes download URLs anyway, so even results that
 get a quality tag during search are downloaded at max quality regardless of
 what was reported.
+
+**Season-pack downloads (playlists)**
+
+When the added magnet's real URL is a YouTube *playlist* (from a full-season
+search), `qbt.py` switches to season mode: it enumerates the playlist with
+`yt-dlp --flat-playlist`, maps each video to an episode, and downloads one
+file per episode as `<Series> S0<N>E0<M>.mp4` in the torrent's download
+folder.
+
+Episode mapping prefers explicit `S03E24`-style tokens in the video title,
+then TheTVDB episode titles for the season (fuzzy-matched against each video
+title, ≥0.6 score) when `tvdbid` is present in the magnet and `TVDB_API_KEY`
+is configured, and falls back to **playlist order** when TheTVDB is
+unavailable (no key, lookup failure, or empty season map) — the first playlist
+video becomes episode 1, and so on. The mapping is the only part that touches
+TheTVDB; `TVDB_API_KEY` in the qbt process is optional. Failed downloads are
+logged and skipped; the torrent reports `uploading` when the whole season
+finishes, and `torrents/files` lists every episode file. Single-video magnets
+behave exactly as before.
 
 **SABR-restricted videos.** Some videos (YouTube experiment, see
 [yt-dlp#12482](https://github.com/yt-dlp/yt-dlp/issues/12482)) serve high-res

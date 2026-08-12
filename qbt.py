@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """qBittorrent Web API v2 spoofer that downloads YouTube via yt-dlp.
 
 Sonarr (or any qBittorrent client) connects to this on its own port (default
@@ -10,6 +11,12 @@ magnet carrier emitted by indexer.py:
 and downloads the video with yt-dlp, faking torrent progress/state so Sonarr
 can track, import and eventually delete it.  Magents without the x.ytindexer
 field are rejected (we are not a real torrent client).
+
+Season packs: a magnet whose x.ytindexer is a YouTube *playlist* URL (emitted
+by the indexer's full-season search) is downloaded as a whole season.  The
+playlist is enumerated, each video is mapped to an episode (TVDB title match,
+falling back to playlist order when TVDB is unconfigured) and files are named
+Bluey S03E01.mp4 etc. so Sonarr can import every episode.
 
 Run it separately from indexer.py so the two stay on different ports:
     python3 qbt.py
@@ -27,6 +34,8 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import tvdb
 
 APP_VERSION = "v4.6.7"
 WEBAPI_VERSION = "2.11.3"
@@ -69,7 +78,7 @@ def _sanitize(name):
 
 
 def _parse_magnet(url):
-    """Extract btih hash, dn and x.ytindexer from a magnet, or None."""
+    """Extract btih hash, dn, x.ytindexer and tvdbid from a magnet, or None."""
     if not url.lower().startswith("magnet:?"):
         return None
     try:
@@ -85,6 +94,8 @@ def _parse_magnet(url):
         info["dn"] = params["dn"][0]
     if params.get("x.ytindexer"):
         info["x.ytindexer"] = params["x.ytindexer"][0]
+    if params.get("x.ytindexertvdbid"):
+        info["tvdbid"] = params["x.ytindexertvdbid"][0]
     return info
 
 
@@ -97,13 +108,15 @@ def _b64url_decode(value):
 
 
 class Torrent:
-    def __init__(self, hash_, name, save_path, category, tags, real_url, paused):
+    def __init__(self, hash_, name, save_path, category, tags, real_url, paused,
+                 tvdbid=""):
         self.hash = hash_
         self.name = name
         self.save_path = save_path
         self.category = category or ""
         self.tags = tags or ""
         self.real_url = real_url
+        self.tvdbid = tvdbid or ""
         self.lock = threading.Lock()
         self.progress = 0.0
         self.state = "pausedDL" if paused else "forcedDL"
@@ -116,6 +129,7 @@ class Torrent:
         self.last_activity = self.added_on
         self.error = None
         self.file_path = None
+        self.file_paths = []
         self.proc = None
         self._started = False
 
@@ -168,7 +182,246 @@ def _download_dir(t):
     return os.path.join(t.save_path, _sanitize(t.name))
 
 
+def _is_playlist_url(url):
+    """True for a YouTube playlist URL (full-season pack carrier)."""
+    return "youtube.com/playlist?list=" in url or (
+        "list=PL" in url and "youtu.be" in url
+    )
+
+
+def _parse_season_info(name):
+    """Split a season-pack torrent name into (series, season).
+
+    "Bluey S03 WEB" -> ("Bluey", 3); "Bluey Season 3 WEB" -> ("Bluey", 3).
+    Returns (name, None) when no season token is found.
+    """
+    m = re.match(r"^(.*?)\s+S(\d{1,2})(?:\s|$)", name)
+    if m:
+        return m.group(1).strip(), int(m.group(2))
+    m = re.search(r"\bSeason\s+(\d{1,2})\b", name, re.I)
+    if m:
+        series = re.sub(r"\bSeason\s+\d{1,2}\b.*$", "", name, re.I).strip()
+        return series, int(m.group(1))
+    return name, None
+
+
+def _norm(s):
+    return re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
+
+
+def _episode_score(title, ep_name):
+    """0..1 similarity between a video title and an episode name."""
+    t = _norm(title)
+    e = _norm(ep_name)
+    if not e:
+        return 0.0
+    if e == t:
+        return 1.0
+    if e in t:
+        return 0.9
+    if t in e:
+        return 0.8
+    ew = [w for w in e.split() if len(w) >= 3]
+    if not ew:
+        return 0.0
+    matched = sum(1 for w in ew if w in t)
+    return matched / len(ew)
+
+
+def _explicit_episode(title, season):
+    """Episode number from an S03E24-style token in the title, or None."""
+    m = re.search(r"\bS(\d{1,2})E(\d{1,3})\b", title, re.I)
+    if m and int(m.group(1)) == season:
+        return int(m.group(2))
+    return None
+
+
+def _enumerate_playlist(url):
+    """Flat-enumerate a playlist -> list of {id, title, url}."""
+    cmd = [
+        YTDLP, "--ignore-config", "--flat-playlist", "--dump-json",
+        "--no-warnings", "--retries", "3", "--", url,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    vids = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not d.get("id") or d.get("_type") == "playlist":
+            continue
+        vids.append({
+            "id": d["id"],
+            "title": d.get("title") or "",
+            "url": d.get("webpage_url")
+            or f"https://www.youtube.com/watch?v={d['id']}",
+        })
+    return vids
+
+
+def _map_videos_to_episodes(vids, tvdbid, season):
+    """Map playlist videos -> [(episode_number, url, title)].
+
+    Uses explicit S03E24 tokens first, then TVDB episode-title fuzzy matching.
+    Falls back to playlist order when TVDB is unconfigured/unavailable.
+    """
+    if not season:
+        return []
+    plan = []
+    if tvdbid and tvdb.enabled():
+        season_eps = tvdb.season_episodes(tvdbid, season)
+        if season_eps:
+            used = set()
+            for v in vids:
+                ep = _explicit_episode(v["title"], season)
+                if ep is not None and ep in season_eps and ep not in used:
+                    used.add(ep)
+                    plan.append((ep, v["url"], v["title"]))
+                    continue
+                best_ep, best_score = None, 0.0
+                for num, name in season_eps.items():
+                    sc = _episode_score(v["title"], name)
+                    if sc > best_score:
+                        best_ep, best_score = num, sc
+                if best_ep is not None and best_score >= 0.6 and best_ep not in used:
+                    used.add(best_ep)
+                    plan.append((best_ep, v["url"], v["title"]))
+            plan.sort(key=lambda x: x[0])
+            return plan
+    log.warning(
+        "TVDB unavailable for season mapping (tvdbid=%r); using playlist order",
+        tvdbid,
+    )
+    for i, v in enumerate(vids, 1):
+        plan.append((i, v["url"], v["title"]))
+    return plan
+
+
+def _run_season_download(t):
+    """Download a whole season playlist, one file per episode."""
+    dl_dir = _download_dir(t)
+    try:
+        os.makedirs(dl_dir, exist_ok=True)
+    except OSError as e:
+        with t.lock:
+            t.state = "error"
+            t.error = f"cannot create download dir: {e}"
+        return
+    series, season = _parse_season_info(t.name)
+    if not season:
+        with t.lock:
+            t.state = "error"
+            t.error = f"cannot parse season from title: {t.name!r}"
+        return
+    vids = _enumerate_playlist(t.real_url)
+    if not vids:
+        with t.lock:
+            t.state = "error"
+            t.error = "cannot enumerate playlist"
+        return
+    plan = _map_videos_to_episodes(vids, getattr(t, "tvdbid", ""), season)
+    if not plan:
+        with t.lock:
+            t.state = "error"
+            t.error = "no playlist videos mapped to episodes"
+        return
+
+    if shutil.which("ffmpeg"):
+        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/b[ext=mp4]/b"
+        merge = ["--merge-output-format", "mp4"]
+    else:
+        fmt = "b[ext=mp4]/b"
+        merge = []
+    extractor_args = []
+    if PLAYER_CLIENT:
+        extractor_args = ["--extractor-args",
+                          f"youtube:player_client={PLAYER_CLIENT}"]
+    if POT_PROVIDER:
+        extractor_args += ["--extractor-args",
+                           f"youtubepot-bgutilhttp:base_url={POT_PROVIDER}"]
+
+    total = len(plan)
+    done = 0
+    completed_files = []
+    total_size = 0
+    log.info("season download start: %s (%d episodes)", t.hash[:8], total)
+    for ep, url, _vtitle in plan:
+        ep_tag = f"S{season:02d}E{ep:02d}"
+        out = os.path.join(dl_dir, f"{series} {ep_tag}.%(ext)s")
+        cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
+               "-f", fmt, *merge, "-o", out, "--", url]
+        log.info("season item %s/%s: %s", done + 1, total, ep_tag)
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError as e:
+            log.warning("cannot launch yt-dlp for %s: %s", ep_tag, e)
+            done += 1
+            continue
+        with t.lock:
+            t.proc = proc
+            t.state = "downloading"
+        pct = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
+        for line in proc.stdout:
+            m = pct.search(line)
+            if m:
+                slot = float(m.group(1)) / 100.0
+                with t.lock:
+                    t.progress = min(0.999, (done + slot) / total)
+        rc = proc.wait()
+        if rc != 0:
+            log.warning("season item %s failed (rc=%s)", ep_tag, rc)
+            done += 1
+            continue
+        import glob
+        found = sorted(glob.glob(os.path.join(dl_dir, f"{series} {ep_tag}.*")))
+        if found:
+            fp = found[0]
+            completed_files.append(fp)
+            total_size += os.path.getsize(fp)
+        done += 1
+        with t.lock:
+            t.progress = (done / total) if done < total else 1.0
+
+    if not completed_files:
+        with t.lock:
+            t.state = "error"
+            t.error = "no episode files downloaded"
+        return
+    with t.lock:
+        t.progress = 1.0
+        t.state = "uploading"
+        t.completion_on = int(time.time())
+        t.last_activity = t.completion_on
+        t.file_paths = completed_files
+        t.file_path = completed_files[0]
+        t.size = total_size
+        t.downloaded = total_size
+        t.uploaded = total_size
+        t.ratio = 1.0
+    log.info(
+        "season download complete: %s (%d episodes, %d MB)",
+        t.hash[:8], len(completed_files), total_size // (1024 * 1024),
+    )
+
+
 def _run_download(t):
+    if _is_playlist_url(t.real_url):
+        _run_season_download(t)
+        return
     dl_dir = _download_dir(t)
     try:
         os.makedirs(dl_dir, exist_ok=True)
@@ -279,8 +532,16 @@ def _torrent_dict(t):
         size = t.size
         error = t.error
         file_path = t.file_path
+        file_paths = list(t.file_paths)
     eta = -1 if progress >= 1.0 else 8640000
-    content_path = file_path if file_path else _download_dir(t)
+    # A single-video torrent points content_path at the file; a season pack
+    # points it at the folder so Sonarr scans and imports every episode.
+    if file_paths:
+        content_path = _download_dir(t)
+    elif file_path:
+        content_path = file_path
+    else:
+        content_path = _download_dir(t)
     return {
         "added_on": t.added_on,
         "amount_left": int(size * (1 - progress)),
@@ -551,10 +812,16 @@ class Handler(BaseHTTPRequestHandler):
         paused = params.get("paused", "false").strip().lower() == "true"
         category = params.get("category", "")
         tags = params.get("tags", "")
-        t = Torrent(hash_, name, save_path, category, tags, real_url, paused)
+        tvdbid = info.get("tvdbid") or ""
+        t = Torrent(hash_, name, save_path, category, tags, real_url, paused,
+                    tvdbid=tvdbid)
         with _registry_lock:
             _registry[hash_] = t
-        log.info("torrent added: %s (%s) -> %s", hash_[:8], name, real_url)
+        log.info(
+            "torrent added: %s (%s) -> %s%s",
+            hash_[:8], name, real_url,
+            f" [season tvdbid={tvdbid}]" if tvdbid else "",
+        )
         if not paused:
             _start_download(t)
         self._text("Ok.", 200)
@@ -666,18 +933,27 @@ def _properties(t):
 
 
 def _files(t):
-    if not t.file_path:
+    paths = list(t.file_paths) if t.file_paths else (
+        [t.file_path] if t.file_path else []
+    )
+    if not paths:
         return []
-    size = int(t.size or os.path.getsize(t.file_path))
-    return [{
-        "name": os.path.basename(t.file_path),
-        "size": size,
-        "progress": t.progress,
-        "priority": 0,
-        "is_seed": bool(t.progress >= 1.0),
-        "piece_range": [0, 1],
-        "availability": 1.0,
-    }]
+    out = []
+    for fp in paths:
+        try:
+            size = int(os.path.getsize(fp))
+        except OSError:
+            size = int(t.size or 0)
+        out.append({
+            "name": os.path.basename(fp),
+            "size": size,
+            "progress": t.progress,
+            "priority": 0,
+            "is_seed": bool(t.progress >= 1.0),
+            "piece_range": [0, 1],
+            "availability": 1.0,
+        })
+    return out
 
 
 def _trackers(t):

@@ -6,12 +6,15 @@ usage() {
   cat <<'EOF'
 Usage:
   ./yt-episode-search.sh -s "Series Name" -S 1 -E 2 -t "Episode Title" [options]
+  ./yt-episode-search.sh -s "Series Name" -S 3 -P [options]
 
 
 Options:
   -s SERIES      Series name (required)
   -S SEASON      Season number (required)
-  -E EPISODE     Episode number (required)
+  -E EPISODE     Episode number (required unless -P)
+  -P             Playlist/season mode: find playlists for the whole season
+                 (no episode number; emits playlist season-packs)
   -t TITLE       Episode title (optional but strongly recommended;
                  repeatable for localized/alternate titles)
   -n MAX         Max final results to output (default: 20)
@@ -35,6 +38,7 @@ Examples:
   ./yt-episode-search.sh -s "My Show" -S 1 -E 2 -t "The Cave" -j
   ./yt-episode-search.sh -s "My Show" -S 1 -E 2 -t "The Cave" -b
   ./yt-episode-search.sh -s "My Show" -S 1 -E 2 -t "The Cave" -D
+  ./yt-episode-search.sh -s "My Show" -S 3 -P -j
 EOF
 }
 
@@ -50,6 +54,7 @@ require_cmd() {
 SERIES=""
 SEASON=""
 EPISODE=""
+PLAYLIST_MODE=false
 declare -a EP_TITLES=()
 MAX_RESULTS=20
 PER_QUERY=5
@@ -67,11 +72,12 @@ DOWNLOAD=false
 DOWNLOAD_DIR="downloads"
 
 
-while getopts ":s:S:E:t:n:p:d:o:Dbjh" opt; do
+while getopts ":s:S:E:t:n:p:d:o:DPbjh" opt; do
   case "$opt" in
     s) SERIES="$OPTARG" ;;
     S) SEASON="$OPTARG" ;;
     E) EPISODE="$OPTARG" ;;
+    P) PLAYLIST_MODE=true ;;
     t) EP_TITLES+=("$OPTARG") ;;
     n) MAX_RESULTS="$OPTARG" ;;
     p) PER_QUERY="$OPTARG" ;;
@@ -99,7 +105,7 @@ if ! [[ "$SEASON" =~ ^[0-9]+$ ]]; then
 fi
 
 
-if ! [[ "$EPISODE" =~ ^[0-9]+$ ]]; then
+if ! $PLAYLIST_MODE && ! [[ "$EPISODE" =~ ^[0-9]+$ ]]; then
   echo "ERROR: episode must be numeric" >&2
   exit 1
 fi
@@ -127,11 +133,96 @@ fi
 
 # Normalize leading zeros: 01 -> 1
 SEASON=$((10#$SEASON))
-EPISODE=$((10#$EPISODE))
+if ! $PLAYLIST_MODE; then
+  EPISODE=$((10#$EPISODE))
+fi
 
 
 require_cmd yt-dlp
 require_cmd jq
+
+
+# ---- Playlist/season mode ----------------------------------------------
+# A full-season interactive search has no episode number; instead we find
+# playlists covering the whole season.  yt-dlp has no ytsearch:playlists
+# prefix, but its YoutubeSearchURLIE honours YouTube's "sp" search filter;
+# sp=EgIQAw%3D%3D restricts results to playlists only (verified live).
+if $PLAYLIST_MODE; then
+  P_WORK="$(mktemp -d)"
+  trap 'rm -rf "$P_WORK"' EXIT
+
+  p_queries=(
+    "$SERIES season $SEASON"
+    "$SERIES s$SEASON"
+    "$SERIES full episodes"
+    "$SERIES episodes"
+  )
+
+  for pq in "${p_queries[@]}"; do
+    echo "Playlist query: $pq" >&2
+    enc="$(printf '%s' "$pq" | jq -sRr @uri)"
+    yt-dlp \
+      --ignore-config \
+      --flat-playlist \
+      --dump-json \
+      --no-warnings \
+      --retries 3 \
+      "https://www.youtube.com/results?search_query=${enc}&sp=EgIQAw%3D%3D" 2>>"$P_WORK/err.log" |
+      jq -c --arg query "$pq" '
+        select(.id != null) |
+        select((.url // "") | startswith("https://www.youtube.com/playlist")) |
+        {
+          query: $query,
+          id: .id,
+          title: (.title // ""),
+          url: .url,
+          playlist_count: (.playlist_count // 0),
+          channel: (.channel // .uploader // "")
+        }
+      ' >> "$P_WORK/raw.jsonl" || true
+    sleep "$DELAY"
+  done
+
+
+  if [[ ! -s "$P_WORK/raw.jsonl" ]]; then
+    echo "ERROR: no playlists found." >&2
+    if [[ -s "$P_WORK/err.log" ]]; then
+      echo "yt-dlp errors:" >&2
+      tail -n 20 "$P_WORK/err.log" >&2
+    fi
+    exit 1
+  fi
+
+
+  # Deduplicate by playlist id, keeping the best (first-seen) title.
+  jq -c -s --argjson MAX "$MAX_RESULTS" '
+    map(select(.id != null))
+    | group_by(.id)
+    | map({
+        id: .[0].id,
+        title: .[0].title,
+        url: .[0].url,
+        playlist_count: .[0].playlist_count,
+        channel: .[0].channel,
+        queries: ([.[].query] | unique)
+      })
+    | .[:$MAX][]
+  ' "$P_WORK/raw.jsonl" > "$P_WORK/final.jsonl"
+
+  if $JSON_OUT; then
+    cat "$P_WORK/final.jsonl"
+  else
+    jq -r '[.id, (.playlist_count // 0), (.channel // ""), .title, .url] | @tsv' \
+      "$P_WORK/final.jsonl" |
+      if command -v column >/dev/null 2>&1; then
+        column -t -s $'\t'
+      else
+        cat
+      fi
+  fi
+  exit 0
+fi
+# ---- end playlist/season mode ------------------------------------------
 
 
 SE_TAG=$(printf "S%02dE%02d" "$SEASON" "$EPISODE")

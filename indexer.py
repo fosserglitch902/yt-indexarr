@@ -86,13 +86,17 @@ def _magnet_url(item: dict) -> str:
       xt=urn:btih:<sha1(youtube_url)>   deterministic fake info-hash
       dn=<url-encoded release title>    used as the torrent/file name
       x.ytindexer=<base64url(url)>      the real URL the spoof runs yt-dlp on
+      x.ytindexertvdbid=<id>            TVDB series id (season packs), optional
     """
     url = item["url"]
     title = item.get("title") or "yt"
     btih = hashlib.sha1(url.encode("utf-8")).hexdigest()
     dn = urllib.parse.quote(title)
     xurl = base64.urlsafe_b64encode(url.encode("utf-8")).decode("ascii")
-    return f"magnet:?xt=urn:btih:{btih}&dn={dn}&x.ytindexer={xurl}"
+    magnet = f"magnet:?xt=urn:btih:{btih}&dn={dn}&x.ytindexer={xurl}"
+    if item.get("tvdbid"):
+        magnet += f"&x.ytindexertvdbid={urllib.parse.quote(str(item['tvdbid']))}"
+    return magnet
 
 
 def _rss_xml(items: list, self_url: str) -> bytes:
@@ -153,9 +157,15 @@ def _rss_xml(items: list, self_url: str) -> bytes:
     return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
 
 
-def _error_xml(message: str) -> bytes:
-    root = ET.Element("error", code="100", description=message)
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+def _empty_rss(self_url: str) -> bytes:
+    """Valid empty RSS feed for queries we cannot answer.
+
+    Sonarr's Torznab parser treats an <error code="100"> response as an
+    ApiKeyException (codes 100-199), which is misleading for a plain "no
+    results" case (e.g. a full-season search).  Returning an empty feed is
+    the correct, graceful way to say "nothing to report".
+    """
+    return _rss_xml([], self_url)
 
 
 _RES_BITRATE = {
@@ -248,11 +258,17 @@ def handle_tvsearch(params: dict, self_url: str) -> bytes:
 
     # tvdbid/rid-only queries we cannot answer.
     if not series and not tvdbid:
-        return _error_xml("No search term (q) or tvdbid provided.")
+        return _empty_rss(self_url)
 
-    # Season may be 0 for date-based series; episode required for tvsearch.
-    if episode == "" or not str(episode).replace("/", "").isdigit():
-        return _error_xml("tvsearch requires an episode (ep) parameter.")
+    # A season without an episode is a full-season (interactive) search:
+    # return playlist season-packs instead of an empty feed.  Only route
+    # here when a season is actually present; a bare tvdbid-only request
+    # falls through to an empty feed.
+    if episode == "" and season != "":
+        return handle_season_search(params, self_url)
+
+    if not str(episode).replace("/", "").isdigit():
+        return _empty_rss(self_url)
 
     # Multi-episode ranges like "12/20" - take the first.
     episode = str(episode).split("/")[0]
@@ -262,7 +278,7 @@ def handle_tvsearch(params: dict, self_url: str) -> bytes:
         season_num = int(season)
 
     if not str(episode).isdigit():
-        return _error_xml(f"Invalid episode: {episode}")
+        return _empty_rss(self_url)
 
     # Prowlarr may send tvdbid instead of (or in addition to) q.  When q is
     # missing, resolve the series name from TVMaze so we still have a YouTube
@@ -311,6 +327,91 @@ def handle_tvsearch(params: dict, self_url: str) -> bytes:
 
     items = run_search(series, season_num, int(episode), episode_titles)
     return _rss_xml(items, self_url)
+
+
+def handle_season_search(params: dict, self_url: str) -> bytes:
+    """Full-season interactive search: return matching YouTube playlists.
+
+    Sonarr sends t=tvsearch&season=N with no ep for a season search.  There is
+    no per-episode matching here; each playlist is surfaced as a season-pack
+    release, and the download-client spoof downloads it as a whole season.
+    """
+    series = (params.get("q") or "").strip()
+    season = params.get("season") or ""
+    tvdbid = (params.get("tvdbid") or "").strip()
+
+    season_num = 0
+    if season != "" and str(season).isdigit():
+        season_num = int(season)
+
+    if not series and tvdbid:
+        series = tvmaze.show_name_by_tvdbid(tvdbid) or ""
+        if series:
+            log.info("TVMaze: tvdbid=%s -> series name %r", tvdbid, series)
+    if not series:
+        series = os.environ.get("YT_INDEXER_FALLBACK_QUERY", "tv episode")
+
+    items = run_season_search(series, season_num, tvdbid=tvdbid)
+    return _rss_xml(items, self_url)
+
+
+def run_season_search(series: str, season: int, tvdbid: str = "") -> list:
+    """Search YouTube for playlists of a whole season via the search script.
+
+    The script runs in playlist mode (yt-dlp results URL with the playlists
+    sp filter), returning one JSON object per playlist.  Each playlist becomes
+    a season-pack release; the magnet carries the playlist URL and, when known,
+    the TVDB series id so the download-client spoof can map videos to episodes.
+    """
+    cmd = [
+        SEARCH_SCRIPT,
+        "-s", series,
+        "-S", str(season),
+        "-P",  # playlist/season mode
+        "-j",
+    ]
+    log.info("running season search: %s", " ".join(cmd))
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    if proc.returncode != 0:
+        log.error("season search failed: %s", proc.stderr.strip())
+        return []
+
+    items = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            log.warning("skipping non-JSON line: %s", line)
+            continue
+        pid = data.get("id")
+        if not pid:
+            continue
+        title = data.get("title", "")
+        count = int(data.get("playlist_count", 0) or 0)
+        size = estimate_size(1500, "1080") * count
+        base = f"{series} S{season:02d} WEB"
+        display = f"{base} - {title}" if title and title != base else base
+        items.append(
+            {
+                "title": base,
+                "display_title": display,
+                "guid": f"ytpl-{pid}",
+                "url": data.get("url")
+                or f"https://www.youtube.com/playlist?list={pid}",
+                "views": 0,
+                "size": size,
+                "description": title,
+                "resolution": "",
+                "language": "",
+                "source": "web",
+                "pub_date": _now_rfc2822(),
+                "tvdbid": tvdbid,
+            }
+        )
+    return items
 
 
 def _parse_languages(params: dict) -> list:
@@ -389,11 +490,16 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "YTIndexer/1.0"
 
     def _send(self, body: bytes, mime: str, status: int = 200):
-        self.send_response(status)
-        self.send_header("Content-Type", mime)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            log.warning("client disconnected during response write")
+        except OSError:
+            log.warning("socket error during response write")
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -403,8 +509,11 @@ class Handler(BaseHTTPRequestHandler):
 
         key = flat.get("apikey") or flat.get("key")
         if REQUIRE_KEY and (not key or key != API_KEY):
-            body = _error_xml("Invalid API key.")
-            self._send(body, XML_MIME, status=401)
+            # Return an empty feed rather than <error> (codes 100-199 read as
+            # ApiKeyException in Sonarr) so auth failures don't surface as a
+            # confusing "API key invalid" against this indexer.
+            body = _empty_rss(self_url)
+            self._send(body, RSS_MIME, status=401)
             return
 
         t = (flat.get("t") or "").lower()
@@ -423,8 +532,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(_rss_xml([], self_url), RSS_MIME)
             return
 
-        body = _error_xml(f"Unsupported operation: {t}")
-        self._send(body, XML_MIME, status=400)
+        body = _empty_rss(self_url)
+        self._send(body, RSS_MIME, status=400)
 
     def log_message(self, fmt, *args):
         log.info("%s - %s", self.address_string(), fmt % args)
