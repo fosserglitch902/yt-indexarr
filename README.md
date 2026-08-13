@@ -43,6 +43,7 @@ Requires `yt-dlp` and `jq`. See `./yt-episode-search.sh -h` for all options.
 | `EXPECTED_DURATION` | Expected episode runtime in seconds; when set, results are filtered to this ± `EP_DURATION_BUFFER` at the search stage so multi-episode compilations and non-episode content are excluded (default empty). Set by the indexer from TVDB/TVMaze runtimes |
 | `EP_DURATION_BUFFER` | ± seconds around `EXPECTED_DURATION` (default 60); yt-dlp fetches more pages to keep the per-query count filled within the window |
 | `RESOLVE_TOP`  | Number of top candidates to re-probe for resolution metadata (default 5, `0` disables) |
+| `SEARCH_PARALLEL` | Number of YouTube queries run concurrently (default 3; set `1` for fully sequential execution). Applies to both single-episode and season-playlist searches |
 | `PLAYER_CLIENT` | yt-dlp YouTube player client(s), comma-separated fallback chain (default `tv_embedded,android_vr,web,tv_simply,android`; set `""` to use yt-dlp's default) |
 | `POT_PROVIDER` | Optional GVS PO token provider base URL (e.g. `http://127.0.0.1:4416`); passed to the probe as `--extractor-args youtubepot-bgutilhttp:base_url=`. Empty (default) disables. Needed to unlock high-res formats on SABR-forced videos (see below). Requires the provider plugin + a Deno 2.3+ runtime with the `yt-dlp-ejs` scripts installed on the host running the probe. |
 
@@ -225,6 +226,7 @@ key: `youtubeindexer` (set `YT_INDEXER_API_KEY` to change it).
 | `EXPECTED_DURATION` | Sets the search window the indexer would resolve automatically — only useful to override or force an unfiltered search with `0` (see the script env table) |
 | `EP_DURATION_BUFFER` | Passed through to the search script (see the script env table) |
 | `RESOLVE_TOP` | Passed through to the search script |
+| `SEARCH_PARALLEL` | Passed through to the search script (see the script env table) |
 | `PLAYER_CLIENT` | Passed through to the search script (see the script env table) |
 | `POT_PROVIDER` | Passed through to the search script (see the script env table) |
 | `YT_CODEC` | Video codec the downloader will use, `auto`/`av1`/`vp9`/`h264` (default `auto`). Also scales the reported Torznab `size` (av1 baseline, vp9 ×1.4, h264 ×2.0) so the size tracks what is downloaded. See the codec notes below |

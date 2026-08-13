@@ -19,7 +19,8 @@ Options:
                  repeatable for localized/alternate titles)
   -n MAX         Max final results to output (default: 20)
   -p PER_QUERY   Number of results per YouTube query (default: 5)
-  -d DELAY       Delay between queries in seconds (default: 1)
+  -d DELAY       Ignored (retained for compatibility; queries now run
+                 concurrently per SEARCH_PARALLEL)
   -j             Output JSON lines instead of a table
   -b             Print best candidate URL only
   -D             Download best candidate with yt-dlp
@@ -35,6 +36,8 @@ Environment:
   EP_DURATION_BUFFER  +/- seconds around EXPECTED_DURATION (default: 60)
   RESOLVE_TOP    Number of top candidates to re-probe for resolution
                  metadata (default: 5, 0 disables the pass)
+  SEARCH_PARALLEL  YouTube queries run concurrently (default: 3; set 1 to
+                 force sequential execution)
 
 
 Examples:
@@ -67,6 +70,10 @@ MIN_DURATION=${MIN_DURATION:-300}
 RESOLVE_TOP=${RESOLVE_TOP:-5}
 EXPECTED_DURATION=${EXPECTED_DURATION:-}
 EP_DURATION_BUFFER=${EP_DURATION_BUFFER:-60}
+# How many YouTube queries to run concurrently (single-episode and season
+# search).  Default 3 to stay gentle on rate limits; set 1 for fully serial,
+# or higher (up to the query count) for the fastest response.
+SEARCH_PARALLEL=${SEARCH_PARALLEL:-3}
 PLAYER_CLIENT=${PLAYER_CLIENT:-tv_embedded,android_vr,web,tv_simply,android}
 export PLAYER_CLIENT
 # Optional bgutil PO token provider URL (e.g. http://pot:4416). Empty disables.
@@ -147,6 +154,11 @@ if ! [[ "$EP_DURATION_BUFFER" =~ ^[0-9]+$ ]]; then
 fi
 
 
+if ! [[ "$SEARCH_PARALLEL" =~ ^[0-9]+$ ]] || (( SEARCH_PARALLEL < 1 )); then
+  SEARCH_PARALLEL=3
+fi
+
+
 # Normalize leading zeros: 01 -> 1
 SEASON=$((10#$SEASON))
 if ! $PLAYLIST_MODE; then
@@ -187,29 +199,47 @@ if $PLAYLIST_MODE; then
     "$SERIES episodes"
   )
 
-  for pq in "${p_queries[@]}"; do
+  # jq filter shared by every playlist query (avoids quoting it per subshell).
+  cat > "$P_WORK/filter.jq" <<'JQ'
+select(.id != null) |
+select((.url // "") | startswith("https://www.youtube.com/playlist")) |
+{
+  query: $query,
+  id: .id,
+  title: (.title // ""),
+  url: .url,
+  playlist_count: (.playlist_count // 0),
+  channel: (.channel // .uploader // "")
+}
+JQ
+
+  # Seed per-query inputs, then run queries concurrently (SEARCH_PARALLEL).
+  for i in "${!p_queries[@]}"; do
+    printf '%s\n' "${p_queries[$i]}" > "$P_WORK/q.$i.txt"
+  done
+  seq 0 $(( ${#p_queries[@]} - 1 )) | xargs -P "$SEARCH_PARALLEL" -I{} bash -c '
+    i="$1"; P_WORK="$2"
+    pq="$(cat "$P_WORK/q.$i.txt")"
     echo "Playlist query: $pq" >&2
-    enc="$(printf '%s' "$pq" | jq -sRr @uri)"
+    enc="$(printf "%s" "$pq" | jq -sRr @uri)"
+    # --playlist-end caps the full results-page scrape to the top hits (we
+    # only keep up to MAX_RESULTS anyway); without it yt-dlp drains the whole
+    # page (~460 entries, ~16s per query).
     yt-dlp \
       --ignore-config \
       --flat-playlist \
       --dump-json \
       --no-warnings \
       --retries 3 \
+      --playlist-end 30 \
       "https://www.youtube.com/results?search_query=${enc}&sp=EgIQAw%3D%3D" 2>>"$P_WORK/err.log" |
-      jq -c --arg query "$pq" '
-        select(.id != null) |
-        select((.url // "") | startswith("https://www.youtube.com/playlist")) |
-        {
-          query: $query,
-          id: .id,
-          title: (.title // ""),
-          url: .url,
-          playlist_count: (.playlist_count // 0),
-          channel: (.channel // .uploader // "")
-        }
-      ' >> "$P_WORK/raw.jsonl" || true
-    sleep "$DELAY"
+      jq -c --arg query "$pq" -f "$P_WORK/filter.jq" > "$P_WORK/raw.$i.jsonl" || true
+  ' _ {} "$P_WORK"
+
+  # Concatenate in original query order so dedup keeps the same first-seen.
+  : > "$P_WORK/raw.jsonl"
+  for i in "${!p_queries[@]}"; do
+    cat "$P_WORK/raw.$i.jsonl" >> "$P_WORK/raw.jsonl" 2>/dev/null || true
   done
 
 
@@ -291,24 +321,43 @@ FINAL="$WORKDIR/final.jsonl"
 ERRLOG="$WORKDIR/yt-dlp.err"
 
 
-: > "$RAW"
-: > "$ERRLOG"
-
-
 echo "Searching YouTube..." >&2
 
 
-for q in "${queries[@]}"; do
+# jq filter shared by every query (avoids quoting it inside the subshells).
+cat > "$WORKDIR/filter.jq" <<'JQ'
+select(.id != null) |
+select((.duration // 0) >= $min_duration) |
+select(if $dur_max > 0 then (.duration // 0) <= $dur_max else true end) |
+{
+  query: $query,
+  id: .id,
+  title: (.title // ""),
+  url: (.webpage_url // ("https://www.youtube.com/watch?v=" + .id)),
+  duration: (.duration // 0),
+  timestamp: (.timestamp // 0),
+  channel: (.channel // .uploader // ""),
+  views: (.view_count // 0)
+}
+JQ
+
+# --flat-playlist makes search much faster because it does not resolve every
+# video fully.  --dump-json prints one JSON object per result.
+if [[ -n "$EXPECTED_DURATION" ]]; then
+  QT_FILTER="duration >= ${DUR_MIN} and duration <= ${DUR_MAX}"
+else
+  QT_FILTER="duration >= ${MIN_DURATION}"
+fi
+export PER_QUERY QT_FILTER MIN_DURATION DUR_MIN DUR_MAX
+
+# Seed per-query inputs, then run queries concurrently (SEARCH_PARALLEL).
+for i in "${!queries[@]}"; do
+  printf '%s\n' "${queries[$i]}" > "$WORKDIR/q.$i.txt"
+done
+seq 0 $(( ${#queries[@]} - 1 )) | xargs -P "$SEARCH_PARALLEL" -I{} bash -c '
+  i="$1"; W="$2"; filter="$3"
+  q="$(cat "$W/q.$i.txt")"
   echo "Query: $q" >&2
-
-
-  # --flat-playlist makes search much faster because it does not resolve every video fully.
-  # --dump-json prints one JSON object per result.
-  if [[ -n "$EXPECTED_DURATION" ]]; then
-    QT_FILTER="duration >= ${DUR_MIN} and duration <= ${DUR_MAX}"
-  else
-    QT_FILTER="duration >= ${MIN_DURATION}"
-  fi
   yt-dlp \
     --ignore-config \
     --flat-playlist \
@@ -316,30 +365,21 @@ for q in "${queries[@]}"; do
     --no-warnings \
     --retries 3 \
     --match-filter "$QT_FILTER" \
-    "ytsearch${PER_QUERY}:${q}" 2>>"$ERRLOG" |
+    "ytsearch${PER_QUERY}:${q}" 2>>"$W/yt.err" |
     jq -c \
       --arg query "$q" \
       --argjson min_duration "$MIN_DURATION" \
       --argjson dur_min "${DUR_MIN:-$MIN_DURATION}" \
-      --argjson dur_max "${DUR_MAX:-0}" '
-      select(.id != null) |
-      select((.duration // 0) >= $min_duration) |
-      select(if $dur_max > 0 then (.duration // 0) <= $dur_max else true end) |
-      {
-        query: $query,
-        id: .id,
-        title: (.title // ""),
-        url: (.webpage_url // ("https://www.youtube.com/watch?v=" + .id)),
-        duration: (.duration // 0),
-        timestamp: (.timestamp // 0),
-        channel: (.channel // .uploader // ""),
-        views: (.view_count // 0)
-      }
-    ' >> "$RAW" || true
+      --argjson dur_max "${DUR_MAX:-0}" \
+      -f "$filter" > "$W/raw.$i.jsonl" || true
+' _ {} "$WORKDIR" "$WORKDIR/filter.jq"
 
-
-  sleep "$DELAY"
+# Concatenate in original query order so dedup keeps the same first-seen.
+: > "$RAW"
+for i in "${!queries[@]}"; do
+  cat "$WORKDIR/raw.$i.jsonl" >> "$RAW" 2>/dev/null || true
 done
+cat "$WORKDIR/yt.err" >> "$ERRLOG" 2>/dev/null || true
 
 
 if [[ ! -s "$RAW" ]]; then
