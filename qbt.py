@@ -23,6 +23,8 @@ Run it separately from indexer.py so the two stay on different ports:
 """
 
 import base64
+import collections
+import glob
 import json
 import logging
 import os
@@ -73,6 +75,11 @@ CODEC = os.environ.get("YT_CODEC", "auto").strip().lower()
 OUTPUT_EXT = os.environ.get("YT_QBT_OUTPUT_EXT", "mkv").strip().lower()
 if OUTPUT_EXT not in ("mkv", "mp4"):
     OUTPUT_EXT = "mkv"
+# Maximum concurrent yt-dlp processes across all torrents.  Season packs and
+# single videos each hold one slot while downloading; extra torrents wait in a
+# Sonarr-visible "Queued" state.  Lower values throttle YouTube requests to
+# reduce rate-limit / bot-check failures on rapid sequential downloads.
+MAX_PARALLEL = max(1, int(os.environ.get("YT_QBT_MAX_PARALLEL", "2")))
 LOG_LEVEL = os.environ.get("YT_QBT_LOG_LEVEL", "INFO")
 
 log = logging.getLogger("yt-qbt")
@@ -80,6 +87,8 @@ logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+
+_DL_SEM = threading.BoundedSemaphore(MAX_PARALLEL)
 
 _PUBLIC_PATHS = {
     "/api/v2/auth/login",
@@ -499,12 +508,16 @@ def _run_season_download(t):
     completed_files = []
     total_size = 0
     log.info("season download start: %s (%d episodes)", t.hash[:8], total)
-    for ep, url, _vtitle in plan:
+    for ep, url, vtitle in plan:
         ep_tag = f"S{season:02d}E{ep:02d}"
         out = os.path.join(dl_dir, f"{series} {ep_tag}.%(ext)s")
         cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
                "-f", fmt, *merge, "-o", out, "--", url]
-        log.info("season item %s/%s: %s", done + 1, total, ep_tag)
+        log.info(
+            "season item start %s/%s: %s (%s)",
+            done + 1, total, ep_tag, vtitle,
+        )
+        item_started = time.time()
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -522,6 +535,9 @@ def _run_season_download(t):
             t.proc = proc
             t.state = "downloading"
         pct = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
+        # Rolling tail of yt-dlp's non-progress output so the real failure
+        # reason (bot-check, 429, unavailable, PO error) surfaces in the log.
+        tail = collections.deque(maxlen=10)
         ep_size = 0
         for line in proc.stdout:
             m = pct.search(line)
@@ -538,17 +554,34 @@ def _run_season_download(t):
                         est = int(ep_size * (done + slot))
                         t.size = est
                         t.downloaded = int(est * t.progress)
+            else:
+                s = line.strip()
+                if s:
+                    tail.append(s)
         rc = proc.wait()
         if rc != 0:
-            log.warning("season item %s failed (rc=%s)", ep_tag, rc)
+            log.warning(
+                "season item %s failed (rc=%s): %s",
+                ep_tag, rc, " | ".join(tail) or "no yt-dlp output",
+            )
             done += 1
             continue
-        import glob
         found = sorted(glob.glob(os.path.join(dl_dir, f"{series} {ep_tag}.*")))
         if found:
             fp = found[0]
             completed_files.append(fp)
-            total_size += os.path.getsize(fp)
+            size = os.path.getsize(fp)
+            total_size += size
+            log.info(
+                "season item complete %s/%s: %s -> %s (%.0f MB, %ds)",
+                done + 1, total, ep_tag, os.path.basename(fp),
+                size / (1024 * 1024), int(time.time() - item_started),
+            )
+        else:
+            log.warning(
+                "season item %s: rc=0 but no output file found (%s)",
+                ep_tag, " | ".join(tail) or "no yt-dlp output",
+            )
         done += 1
         with t.lock:
             t.progress = (done / total) if done < total else 1.0
@@ -576,6 +609,28 @@ def _run_season_download(t):
 
 
 def _run_download(t):
+    # Gate concurrent downloads: at most MAX_PARALLEL yt-dlp processes run at
+    # once across all torrents.  A torrent waiting for a slot reports queuedDL
+    # so Sonarr shows it queued, and it resumes when a slot frees.
+    got = _DL_SEM.acquire(timeout=0)
+    if not got:
+        with t.lock:
+            t.state = "queuedDL"
+        _DL_SEM.acquire()
+        with t.lock:
+            t.state = "downloading"
+    try:
+        if not _lookup(t.hash):
+            return
+        with t.lock:
+            if t.state == "pausedDL":
+                return
+        _run_download_locked(t)
+    finally:
+        _DL_SEM.release()
+
+
+def _run_download_locked(t):
     if _is_playlist_url(t.real_url):
         _run_season_download(t)
         return
@@ -623,6 +678,9 @@ def _run_download(t):
     with t.lock:
         t.proc = proc
     pct = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
+    # Rolling tail of yt-dlp's non-progress output so the real failure reason
+    # (bot-check, 429, unavailable, PO error) surfaces in the log.
+    tail = collections.deque(maxlen=10)
     for line in proc.stdout:
         m = pct.search(line)
         if m:
@@ -636,6 +694,10 @@ def _run_download(t):
                     # scale downloaded/amount_left live so Sonarr's activity
                     # bar animates; exactness isn't important, closeness is.
                     t.downloaded = int(t.size * t.progress)
+        else:
+            s = line.strip()
+            if s:
+                tail.append(s)
     rc = proc.wait()
     if rc == 0:
         found = None
@@ -661,11 +723,19 @@ def _run_download(t):
                 t.uploaded = t.size
                 t.ratio = 1.0
         log.info("download complete: %s (%s)", t.hash[:8], found or t.name)
+        if not found:
+            log.warning(
+                "download %s: rc=0 but no output file found (%s)",
+                t.hash[:8], " | ".join(tail) or "no yt-dlp output",
+            )
     else:
         with t.lock:
             t.state = "error"
             t.error = f"yt-dlp exited with code {rc}"
-        log.warning("download failed: %s (%s)", t.hash[:8], t.error)
+        log.warning(
+            "download failed: %s (%s): %s",
+            t.hash[:8], t.error, " | ".join(tail) or "no yt-dlp output",
+        )
 
 
 def _start_download(t):
