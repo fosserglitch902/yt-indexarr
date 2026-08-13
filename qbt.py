@@ -693,8 +693,10 @@ def _torrent_dict(t):
         file_path = t.file_path
         file_paths = list(t.file_paths)
     eta = -1 if progress >= 1.0 else 8640000
-    # A single-video torrent points content_path at the file; a season pack
-    # points it at the folder so Sonarr scans and imports every episode.
+    # save_path must stay the base download dir while content_path points at
+    # the torrent's actual content. Sonarr refuses to import when the two are
+    # equal ("Path matches client base download directory"); a season pack
+    # points content_path at the per-torrent folder so every episode imports.
     if file_paths:
         content_path = _download_dir(t)
     elif file_path:
@@ -733,7 +735,7 @@ def _torrent_dict(t):
         "progress": progress,
         "ratio": t.ratio,
         "ratio_limit": -2,
-        "save_path": _download_dir(t),
+        "save_path": t.save_path,
         "seeding_time": 0 if progress < 1.0 else int(time.time() - (t.completion_on or t.added_on)),
         "seeding_time_limit": -2,
         "seen_complete": 0,
@@ -1062,7 +1064,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def _properties(t):
     return {
-        "save_path": _download_dir(t),
+        "save_path": t.save_path,
         "creation_date": t.added_on,
         "pieces": 0,
         "comment": "",
