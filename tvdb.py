@@ -306,7 +306,9 @@ def season_episodes(tvdbid, season):
     key = f"se2:{(tvdbid or '').strip()}:{season}"
     cached = _cache_get(key)
     if cached is not None:
-        return cached
+        # JSON cache keys round-trip as strings; episode numbers must stay
+        # ints (callers format them, e.g. S03E%02d, and compare to ints).
+        return {int(k): v for k, v in cached.items()}
     result = {}
     page = 0
     while page < 50:

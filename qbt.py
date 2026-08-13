@@ -364,6 +364,9 @@ def _map_videos_to_episodes(vids, tvdbid, season):
             log.info("season skip (no episode match): %s", v["title"][:60])
             continue
         ep_num, runtime = matched
+        # Defensive: cache keys can arrive as strings (JSON round-trip);
+        # episode numbers must be ints for S03E%02d formatting and sorting.
+        ep_num = int(ep_num)
         if ep_num in used:
             log.info("season skip (already mapped): %s", v["title"][:60])
             continue
@@ -449,6 +452,7 @@ def _run_season_download(t):
             t.state = "error"
             t.error = f"cannot parse season from title: {t.name!r}"
         return
+    season = int(season)  # defensive: must be int for S%02d formatting
     vids = _enumerate_playlist(t.real_url)
     if not vids:
         with t.lock:

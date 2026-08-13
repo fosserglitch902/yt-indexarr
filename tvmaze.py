@@ -209,7 +209,9 @@ def season_episodes(tvdbid, season):
     key = f"season:{show_id}:{season}"
     cached = _cache_get(key)
     if isinstance(cached, dict):
-        return cached
+        # JSON cache keys round-trip as strings; episode numbers must stay
+        # ints (callers format them, e.g. S03E%02d, and compare to ints).
+        return {int(k): v for k, v in cached.items()}
     result = {}
     try:
         data = _get_json(f"/shows/{show_id}/episodes")
