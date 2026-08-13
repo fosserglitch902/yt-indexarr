@@ -40,6 +40,8 @@ Requires `yt-dlp` and `jq`. See `./yt-episode-search.sh -h` for all options.
 | Variable | Meaning |
 | -------- | ------- |
 | `MIN_DURATION` | Minimum video length in seconds (default 300) |
+| `EXPECTED_DURATION` | Expected episode runtime in seconds; when set, results are filtered to this ± `EP_DURATION_BUFFER` at the search stage so multi-episode compilations and non-episode content are excluded (default empty). Set by the indexer from TVDB/TVMaze runtimes |
+| `EP_DURATION_BUFFER` | ± seconds around `EXPECTED_DURATION` (default 60); yt-dlp fetches more pages to keep the per-query count filled within the window |
 | `RESOLVE_TOP`  | Number of top candidates to re-probe for resolution metadata (default 5, `0` disables) |
 | `PLAYER_CLIENT` | yt-dlp YouTube player client(s), comma-separated fallback chain (default `tv_embedded,android_vr,web,tv_simply,android`; set `""` to use yt-dlp's default) |
 | `POT_PROVIDER` | Optional GVS PO token provider base URL (e.g. `http://127.0.0.1:4416`); passed to the probe as `--extractor-args youtubepot-bgutilhttp:base_url=`. Empty (default) disables. Needed to unlock high-res formats on SABR-forced videos (see below). Requires the provider plugin + a Deno 2.3+ runtime with the `yt-dlp-ejs` scripts installed on the host running the probe. |
@@ -57,6 +59,9 @@ carries a season/episode token (`has_episode`) always sort above title-only
 candidates — then by score. The episode title acts as a boost *within* a tier,
 not a substitute for the episode number. Title-only candidates (e.g. season-0
 specials named only by episode title) are still returned, just ranked below.
+When `EXPECTED_DURATION` is known the duration window already excluded anything
+outside it, so duration no longer influences ranking (constant score); the
+classic range score only applies in the fallback (no expected runtime).
 
 ### `indexer.py`
 
@@ -85,6 +90,10 @@ matching `"<show> season N"` and returns each playlist as one release whose
 title is `<Series> S0<N> WEB - <real playlist title>`, with the playlist's
 video count folded into the size estimate. When `q` is missing, the series
 name is resolved from `tvdbid` via TVMaze, matching the single-episode path.
+When episode runtimes for the season are available (TVDB, else TVMaze), the
+size is computed from the *summed* per-episode runtimes instead of
+`1500 × playlist_count`, so the packaged size reflects how much content the
+playlist actually carries.
 
 Each season-pack enclosure is a magnet that carries the *playlist* URL (not a
 single video) plus the TVDB series id so the download spoofer can map videos
@@ -102,7 +111,11 @@ magnet:?xt=urn:btih:<sha1(url)>&dn=<release title>&x.ytindexer=<base64url(playli
 Sonarr only sends `q` + `season`/`ep` — never the episode title. When a
 `tvdbid` is supplied (advertised in caps), `indexer.py` resolves the episode
 title and passes it to the search script as `-t`, so title-only-named videos
-(e.g. season-0 specials) surface with a `title_score`. Lookups are cached in
+(e.g. season-0 specials) surface with a `title_score`. It also resolves the
+episode's **runtime** (minutes → seconds, TVDB first then the keyless TVMaze
+fallback) and passes it as `EXPECTED_DURATION`, so the search window excludes
+multi-episode compilations and clips. Unresolved runtimes leave the search
+unfiltered. Lookups are cached in
 memory + on disk (default TTL 7 days); any failure degrades gracefully to the
 number-only search.
 
@@ -185,6 +198,8 @@ key: `youtubeindexer` (set `YT_INDEXER_API_KEY` to change it).
 | `YT_INDEXER_FALLBACK_QUERY` | Query used when the series name can't be resolved (default `tv episode`) |
 | `YT_INDEXER_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
 | `MIN_DURATION` | Passed through to the search script |
+| `EXPECTED_DURATION` | Sets the search window the indexer would resolve automatically — only useful to override or force an unfiltered search with `0` (see the script env table) |
+| `EP_DURATION_BUFFER` | Passed through to the search script (see the script env table) |
 | `RESOLVE_TOP` | Passed through to the search script |
 | `PLAYER_CLIENT` | Passed through to the search script (see the script env table) |
 | `POT_PROVIDER` | Passed through to the search script (see the script env table) |
@@ -233,6 +248,7 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_PLAYER_CLIENT` | yt-dlp YouTube player client(s) for downloads, comma-separated fallback chain (default `tv_embedded,android_vr,web,tv_simply,android`) |
 | `YT_QBT_POT_PROVIDER` | Optional GVS PO token provider base URL for downloads (e.g. `http://127.0.0.1:4416`); empty (default) disables. Appended as `--extractor-args youtubepot-bgutilhttp:base_url=`. See SABR note below. |
 | `YT_QBT_DL_DIR` | Save path when the client sends none (default `~/downloads`) |
+| `YT_QBT_EP_DURATION_BUFFER` | ± seconds around a mapped episode's runtime when checking whether a playlist video is that episode (default 60; mirrors the search script's `EP_DURATION_BUFFER`) |
 | `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
 
 Without `ffmpeg`, downloads use a single-file best format preferring `mp4`
@@ -258,12 +274,19 @@ file per episode as `<Series> S0<N>E0<M>.mp4` in the torrent's download
 folder.
 
 Episode mapping prefers explicit `S03E24`-style tokens in the video title,
-then TheTVDB episode titles for the season (fuzzy-matched against each video
-title, ≥0.6 score) when `tvdbid` is present in the magnet and `TVDB_API_KEY`
-is configured, and falls back to **playlist order** when TheTVDB is
-unavailable (no key, lookup failure, or empty season map) — the first playlist
-video becomes episode 1, and so on. The mapping is the only part that touches
-TheTVDB; `TVDB_API_KEY` in the qbt process is optional. Failed downloads are
+then season episode metadata (titles + per-episode runtimes) from **TheTVDB**
+when `tvdbid` is present in the magnet and `TVDB_API_KEY` is configured,
+falling back to the **keyless TVMaze** season lookup when TheTVDB is
+unavailable (no key, lookup failure, or empty season map). Before mapping,
+videos are skipped when they look like extras (BTS/trailers/interviews/
+recaps/highlights/...), when nothing in the title matches any episode (≥0.6
+fuzzy score), when the episode is already mapped, or when the video's
+duration (from `--flat-playlist`) falls outside the episode's runtime ±
+`YT_QBT_EP_DURATION_BUFFER` — so compilations, clips and bonus content in a
+season playlist are never downloaded. Videos are mapped to episodes 1..N in
+playlist order *only* when no season metadata can be obtained at all. The
+mapping is the only part that touches the metadata APIs; a `TVDB_API_KEY` in
+the qbt process is optional. Failed downloads are
 logged and skipped; the torrent reports `uploading` when the whole season
 finishes, and `torrents/files` lists every episode file. Single-video magnets
 behave exactly as before.

@@ -206,7 +206,7 @@ def _request(path, _retry=True):
 
 
 def _episode(tvdbid, season, number):
-    """Return {id, name} for one episode, cached; None on failure/404."""
+    """Return {id, name, runtime} for one episode, cached; None on failure."""
     key = f"ep:{tvdbid}:{season}:{number}"
     cached = _cache_get(key)
     if cached is not None:
@@ -220,9 +220,27 @@ def _episode(tvdbid, season, number):
     if data:
         episodes = (data.get("data") or {}).get("episodes") or []
         if episodes:
-            result = {"id": episodes[0].get("id"), "name": episodes[0].get("name")}
+            e0 = episodes[0]
+            result = {
+                "id": e0.get("id"),
+                "name": e0.get("name"),
+                "runtime": e0.get("runtime"),
+            }
     _cache_set(key, result)
     return result
+
+
+def episode_runtime(tvdbid, season: int, number: int):
+    """Episode runtime in minutes, or None when TVDB is unconfigured/unknown."""
+    if not enabled():
+        return None
+    ep = _episode(tvdbid, season, number)
+    if not ep or not ep.get("name"):
+        return None
+    try:
+        return int(ep["runtime"])
+    except (TypeError, ValueError):
+        return None
 
 
 def episode_name(tvdbid, season, number, lang2=None):
@@ -276,15 +294,16 @@ def resolve_titles(tvdbid, season, number, languages):
 
 
 def season_episodes(tvdbid, season):
-    """Return {episode_number: name} for a whole season, cached; {} on failure.
+    """Return {episode_number: {name, runtime}} for a whole season; {} on failure.
 
-    Used by the download-client spoof to map playlist videos to episodes when
-    renaming a downloaded season pack.  Returns {} when TVDB is not configured
-    or the season cannot be found, so callers can fall back to playlist order.
+    Runtime is in minutes when TheTVDB reports it, else None.  Used by the
+    download-client spoof to map playlist videos to episodes (and reject
+    extras) when renaming a downloaded season pack.  Returns {} when TVDB is
+    not configured or the season cannot be found, so callers can fall back.
     """
     if not enabled():
         return {}
-    key = f"se:{(tvdbid or '').strip()}:{season}"
+    key = f"se2:{(tvdbid or '').strip()}:{season}"
     cached = _cache_get(key)
     if cached is not None:
         return cached
@@ -303,7 +322,10 @@ def season_episodes(tvdbid, season):
             num = ep.get("number")
             name = ep.get("name")
             if num is not None and name:
-                result[int(num)] = name
+                result[int(num)] = {
+                    "name": name,
+                    "runtime": ep.get("runtime"),
+                }
         links = data.get("links") or {}
         if not links.get("next"):
             break

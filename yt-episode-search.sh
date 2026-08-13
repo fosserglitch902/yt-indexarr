@@ -29,6 +29,10 @@ Options:
 
 Environment:
   MIN_DURATION   Minimum video length in seconds (default: 300)
+  EXPECTED_DURATION  Expected episode runtime in seconds; when set, results are
+                 filtered to this +/- EP_DURATION_BUFFER at the search stage so
+                 multi-episode compilations are excluded (default: empty)
+  EP_DURATION_BUFFER  +/- seconds around EXPECTED_DURATION (default: 60)
   RESOLVE_TOP    Number of top candidates to re-probe for resolution
                  metadata (default: 5, 0 disables the pass)
 
@@ -61,6 +65,8 @@ PER_QUERY=5
 DELAY=1
 MIN_DURATION=${MIN_DURATION:-300}
 RESOLVE_TOP=${RESOLVE_TOP:-5}
+EXPECTED_DURATION=${EXPECTED_DURATION:-}
+EP_DURATION_BUFFER=${EP_DURATION_BUFFER:-60}
 PLAYER_CLIENT=${PLAYER_CLIENT:-tv_embedded,android_vr,web,tv_simply,android}
 export PLAYER_CLIENT
 # Optional bgutil PO token provider URL (e.g. http://pot:4416). Empty disables.
@@ -131,10 +137,33 @@ if ! [[ "$MIN_DURATION" =~ ^[0-9]+$ ]]; then
 fi
 
 
+if [[ -n "$EXPECTED_DURATION" ]] && ! [[ "$EXPECTED_DURATION" =~ ^[0-9]+$ ]]; then
+  EXPECTED_DURATION=
+fi
+
+
+if ! [[ "$EP_DURATION_BUFFER" =~ ^[0-9]+$ ]]; then
+  EP_DURATION_BUFFER=60
+fi
+
+
 # Normalize leading zeros: 01 -> 1
 SEASON=$((10#$SEASON))
 if ! $PLAYLIST_MODE; then
   EPISODE=$((10#$EPISODE))
+fi
+
+
+# Duration window.  When EXPECTED_DURATION (seconds) is known, filter results
+# to the episode's runtime +/- EP_DURATION_BUFFER so multi-episode
+# compilations are excluded at the search stage (yt-dlp fetches more to still
+# fill the per-query count).  Otherwise fall back to the MIN_DURATION floor.
+if [[ -n "$EXPECTED_DURATION" ]]; then
+  DUR_MIN=$(( EXPECTED_DURATION - EP_DURATION_BUFFER ))
+  DUR_MAX=$(( EXPECTED_DURATION + EP_DURATION_BUFFER ))
+  if (( DUR_MIN < MIN_DURATION )); then
+    DUR_MIN=$MIN_DURATION
+  fi
 fi
 
 
@@ -275,17 +304,27 @@ for q in "${queries[@]}"; do
 
   # --flat-playlist makes search much faster because it does not resolve every video fully.
   # --dump-json prints one JSON object per result.
+  if [[ -n "$EXPECTED_DURATION" ]]; then
+    QT_FILTER="duration >= ${DUR_MIN} and duration <= ${DUR_MAX}"
+  else
+    QT_FILTER="duration >= ${MIN_DURATION}"
+  fi
   yt-dlp \
     --ignore-config \
     --flat-playlist \
     --dump-json \
     --no-warnings \
     --retries 3 \
-    --match-filter "duration >= ${MIN_DURATION}" \
+    --match-filter "$QT_FILTER" \
     "ytsearch${PER_QUERY}:${q}" 2>>"$ERRLOG" |
-    jq -c --arg query "$q" --argjson min_duration "$MIN_DURATION" '
+    jq -c \
+      --arg query "$q" \
+      --argjson min_duration "$MIN_DURATION" \
+      --argjson dur_min "${DUR_MIN:-$MIN_DURATION}" \
+      --argjson dur_max "${DUR_MAX:-0}" '
       select(.id != null) |
       select((.duration // 0) >= $min_duration) |
+      select(if $dur_max > 0 then (.duration // 0) <= $dur_max else true end) |
       {
         query: $query,
         id: .id,
@@ -419,6 +458,7 @@ jq -c \
   --arg season "$SEASON" \
   --arg episode "$EPISODE" \
   --argjson min_duration "$MIN_DURATION" \
+  --argjson expected_duration "${EXPECTED_DURATION:-0}" \
   --argjson ep_tokens "$EP_TOKENS_JSON" '
   def norm:
     tostring
@@ -495,12 +535,16 @@ jq -c \
 
 
   # Duration sanity score.
-  # Good range: MIN_DURATION (default 5 min) up to 2h.
-  # Penalties scale with extremity: well under the 5-minute floor is almost
-  # certainly a clip/short; well over 2h is likely a compilation/live stream.
+  # When an expected runtime is known the window filter already excluded
+  # anything outside it, so every survivor is in range and duration is not
+  # ranked (constant 5).  In the fallback (no expected duration) the classic
+  # range score applies: MIN_DURATION (default 5 min) up to 2h, with
+  # penalties scaling with extremity for clips/shorts and compilations.
   ((.duration // 0) | if type == "number" then . else (try tonumber catch 0) end) as $dur |
   (
-    if $dur >= $min_duration and $dur <= 7200 then
+    if $expected_duration > 0 then
+      5
+    elif $dur >= $min_duration and $dur <= 7200 then
       5
     elif $dur > 0 and $dur < $min_duration then
       ((-25 * (($min_duration - $dur) / $min_duration)) | floor)

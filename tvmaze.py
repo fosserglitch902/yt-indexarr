@@ -154,9 +154,26 @@ def show_by_name(name):
 
 def episode_title(show_id, season, number):
     """Return the episode name, or None (also None on 404/timeout)."""
-    key = f"title:{show_id}:{season}:{number}"
+    ep = _episode_data(show_id, season, number)
+    return ep.get("name") if ep else None
+
+
+def episode_runtime(show_id, season, number):
+    """Episode runtime in minutes, or None (also None on 404/timeout)."""
+    ep = _episode_data(show_id, season, number)
+    if not ep:
+        return None
+    try:
+        return int(ep.get("runtime") or 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def _episode_data(show_id, season, number):
+    """Full episode object (name+runtime) for one episode, cached; or None."""
+    key = f"ep:{show_id}:{season}:{number}"
     cached = _cache_get(key)
-    if cached is not None:
+    if isinstance(cached, dict):
         return cached
     result = None
     try:
@@ -164,12 +181,48 @@ def episode_title(show_id, season, number):
             f"/shows/{show_id}/episodebynumber?season={season}&number={number}"
         )
         if isinstance(data, dict) and data.get("name"):
-            result = data["name"]
+            result = {
+                "name": data["name"],
+                "runtime": data.get("runtime"),
+            }
     except (OSError, ValueError):
         log.warning(
             "TVMaze episode lookup failed for show %s s%se%s",
             show_id, season, number,
         )
+    _cache_set(key, result)
+    return result
+
+
+def season_episodes(tvdbid, season):
+    """Return {episode_number: {name, runtime}} for a whole season; {} on fail.
+
+    Keyless: resolves the show from tvdbid, then fetches all episodes once and
+    filters to the season client-side (TVMaze's ?season= filter is not
+    honored).  Runtime is in minutes when reported, else None.
+    """
+    if not tvdbid or not str(tvdbid).isdigit():
+        return {}
+    show_id = show_by_tvdbid(int(tvdbid))
+    if not show_id:
+        return {}
+    key = f"season:{show_id}:{season}"
+    cached = _cache_get(key)
+    if isinstance(cached, dict):
+        return cached
+    result = {}
+    try:
+        data = _get_json(f"/shows/{show_id}/episodes")
+        if isinstance(data, list):
+            for ep in data:
+                if ep.get("season") != season or not ep.get("number"):
+                    continue
+                result[int(ep["number"])] = {
+                    "name": ep.get("name") or "",
+                    "runtime": ep.get("runtime"),
+                }
+    except (OSError, ValueError):
+        log.warning("TVMaze season episodes failed for show %s", show_id)
     _cache_set(key, result)
     return result
 
@@ -190,3 +243,19 @@ def resolve_title(tvdbid, season: int, number: int, name: str = ""):
     if not show_id:
         return None
     return episode_title(show_id, season, number)
+
+
+def resolve_runtime(tvdbid, season: int, number: int, name: str = ""):
+    """One-call helper: tvdbid or name + season + number -> runtime minutes.
+
+    Returns None when nothing resolves (callers degrade to no filter).
+    """
+    if tvdbid and str(tvdbid).isdigit():
+        show_id = show_by_tvdbid(int(tvdbid))
+    elif name:
+        show_id = show_by_name(name)
+    else:
+        return None
+    if not show_id:
+        return None
+    return episode_runtime(show_id, season, number)

@@ -190,7 +190,8 @@ def estimate_size(duration: int, resolution: str = "") -> int:
 
 
 def run_search(
-    series: str, season: str, episode: str, episode_titles: list = None
+    series: str, season: str, episode: str, episode_titles: list = None,
+    expected_duration: int = 0,
 ) -> list:
     cmd = [
         SEARCH_SCRIPT,
@@ -201,12 +202,16 @@ def run_search(
     ]
     for title in episode_titles or []:
         cmd += ["-t", title]
+    env = dict(os.environ)
+    if expected_duration and expected_duration > 0:
+        env["EXPECTED_DURATION"] = str(int(expected_duration))
     log.info("running search: %s", " ".join(cmd))
     proc = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=180,
+        env=env,
     )
     if proc.returncode != 0:
         log.error("search script failed: %s", proc.stderr.strip())
@@ -325,7 +330,30 @@ def handle_tvsearch(params: dict, self_url: str) -> bytes:
                 tvdbid, season_num, episode, episode_title,
             )
 
-    items = run_search(series, season_num, int(episode), episode_titles)
+    # Expected runtime (minutes -> seconds) for the episode, used to filter
+    # out multi-episode compilations at the search stage.  TVDB first, TVMaze
+    # fallback; unresolved stays 0 so the search runs unfiltered as before.
+    expected_duration = 0
+    if tvdb.enabled():
+        tvm = tvdb.episode_runtime(tvdbid, season_num, int(episode))
+        if tvm:
+            expected_duration = int(tvm) * 60
+    if not expected_duration:
+        tm = tvmaze.resolve_runtime(
+            tvdbid, season_num, int(episode), name=series
+        )
+        if tm:
+            expected_duration = int(tm) * 60
+    if expected_duration:
+        log.info(
+            "expected runtime: tvdbid=%s s%se%s -> %ss",
+            tvdbid, season_num, episode, expected_duration,
+        )
+
+    items = run_search(
+        series, season_num, int(episode), episode_titles,
+        expected_duration=expected_duration,
+    )
     return _rss_xml(items, self_url)
 
 
@@ -355,6 +383,37 @@ def handle_season_search(params: dict, self_url: str) -> bytes:
     return _rss_xml(items, self_url)
 
 
+def _season_total_runtime(tvdbid: str, season: int) -> int:
+    """Sum of episode runtimes (seconds) for a season, or 0 when unavailable.
+
+    TVDB first (when a key is configured), then the keyless TVMaze fallback.
+    Only entries with a named runtime count.
+    """
+    if tvdbid and str(tvdbid).isdigit():
+        if tvdb.enabled():
+            season_eps = tvdb.season_episodes(tvdbid, season)
+            if season_eps:
+                total = 0
+                for meta in season_eps.values():
+                    try:
+                        total += int(meta.get("runtime") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                if total > 0:
+                    return total * 60
+        tm = tvmaze.season_episodes(tvdbid, season)
+        if tm:
+            total = 0
+            for meta in tm.values():
+                try:
+                    total += int(meta.get("runtime") or 0)
+                except (TypeError, ValueError):
+                    continue
+            if total > 0:
+                return total * 60
+    return 0
+
+
 def run_season_search(series: str, season: int, tvdbid: str = "") -> list:
     """Search YouTube for playlists of a whole season via the search script.
 
@@ -376,6 +435,8 @@ def run_season_search(series: str, season: int, tvdbid: str = "") -> list:
         log.error("season search failed: %s", proc.stderr.strip())
         return []
 
+    season_sec = _season_total_runtime(tvdbid, season)
+
     items = []
     for line in proc.stdout.splitlines():
         line = line.strip()
@@ -391,7 +452,10 @@ def run_season_search(series: str, season: int, tvdbid: str = "") -> list:
             continue
         title = data.get("title", "")
         count = int(data.get("playlist_count", 0) or 0)
-        size = estimate_size(1500, "1080") * count
+        if season_sec:
+            size = estimate_size(season_sec, "1080")
+        else:
+            size = estimate_size(1500, "1080") * count
         base = f"{series} S{season:02d} WEB"
         display = f"{base} - {title}" if title and title != base else base
         items.append(

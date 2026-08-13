@@ -36,6 +36,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import tvdb
+import tvmaze
 
 APP_VERSION = "v4.6.7"
 WEBAPI_VERSION = "2.11.3"
@@ -56,6 +57,10 @@ PLAYER_CLIENT = os.environ.get(
 # the bgutil-ytdlp-pot-provider plugin + a JS runtime (deno/node) installed.
 POT_PROVIDER = os.environ.get("YT_QBT_POT_PROVIDER", "").strip()
 DL_DIR = os.environ.get("YT_QBT_DL_DIR", os.path.expanduser("~/downloads"))
+# +/- seconds around an episode's reported runtime when checking whether a
+# playlist video is the real episode (vs a compilation/extras).  Matches the
+# search script's EP_DURATION_BUFFER.  Only used when season metadata exists.
+EP_DURATION_BUFFER = int(os.environ.get("YT_QBT_EP_DURATION_BUFFER", "60"))
 LOG_LEVEL = os.environ.get("YT_QBT_LOG_LEVEL", "INFO")
 
 log = logging.getLogger("yt-qbt")
@@ -237,7 +242,7 @@ def _explicit_episode(title, season):
 
 
 def _enumerate_playlist(url):
-    """Flat-enumerate a playlist -> list of {id, title, url}."""
+    """Flat-enumerate a playlist -> list of {id, title, url, duration}."""
     cmd = [
         YTDLP, "--ignore-config", "--flat-playlist", "--dump-json",
         "--no-warnings", "--retries", "3", "--", url,
@@ -262,45 +267,107 @@ def _enumerate_playlist(url):
             "title": d.get("title") or "",
             "url": d.get("webpage_url")
             or f"https://www.youtube.com/watch?v={d['id']}",
+            "duration": int(d.get("duration") or 0),
         })
     return vids
+
+
+_EXTRAS_TOKENS = (
+    "behind the scenes", "behind-the-scenes", "bts", "trailer", "teaser",
+    "interview", "bloopers", "reaction", "review", "commentary",
+    "documentary", "making of", "deleted scene", "recap", "promo",
+)
+
+
+def _looks_like_extra(title):
+    """True when a video title carries obvious non-episode content."""
+    t = title.lower()
+    return any(tok in t for tok in _EXTRAS_TOKENS)
+
+
+def _duration_ok(video_dur, runtime_min, buffer_sec):
+    """True when a video's duration matches an episode runtime (+/- buffer).
+
+    Unknown runtime/duration falls through as acceptable so we never drop a
+    real episode just because metadata is missing a value.
+    """
+    if not runtime_min:
+        return True
+    expected = int(runtime_min) * 60
+    if not video_dur:
+        return True
+    return abs(video_dur - expected) <= max(buffer_sec, 0)
 
 
 def _map_videos_to_episodes(vids, tvdbid, season):
     """Map playlist videos -> [(episode_number, url, title)].
 
-    Uses explicit S03E24 tokens first, then TVDB episode-title fuzzy matching.
-    Falls back to playlist order when TVDB is unconfigured/unavailable.
+    Season metadata (explicit S03E24 tokens, episode titles + runtimes) comes
+    from TheTVDB when a key is configured, else the keyless TVMaze fallback.
+    Videos whose duration does not match the mapped episode's runtime, or that
+    look like extras/BTS/interviews, are skipped so non-episode playlist
+    content is not downloaded.  Falls back to playlist order only when no
+    season metadata is available at all.
     """
     if not season:
         return []
+    season_eps = {}
+    source = ""
+    if tvdbid:
+        if tvdb.enabled():
+            season_eps = tvdb.season_episodes(tvdbid, season)
+            if season_eps:
+                source = "TVDB"
+        if not season_eps:
+            season_eps = tvmaze.season_episodes(tvdbid, season)
+            if season_eps:
+                source = "TVMaze"
+    if not season_eps:
+        log.warning(
+            "no season metadata (tvdbid=%r); using playlist order", tvdbid
+        )
+        return [(i, v["url"], v["title"]) for i, v in enumerate(vids, 1)]
+
+    used = set()
     plan = []
-    if tvdbid and tvdb.enabled():
-        season_eps = tvdb.season_episodes(tvdbid, season)
-        if season_eps:
-            used = set()
-            for v in vids:
-                ep = _explicit_episode(v["title"], season)
-                if ep is not None and ep in season_eps and ep not in used:
-                    used.add(ep)
-                    plan.append((ep, v["url"], v["title"]))
-                    continue
-                best_ep, best_score = None, 0.0
-                for num, name in season_eps.items():
-                    sc = _episode_score(v["title"], name)
-                    if sc > best_score:
-                        best_ep, best_score = num, sc
-                if best_ep is not None and best_score >= 0.6 and best_ep not in used:
-                    used.add(best_ep)
-                    plan.append((best_ep, v["url"], v["title"]))
-            plan.sort(key=lambda x: x[0])
-            return plan
-    log.warning(
-        "TVDB unavailable for season mapping (tvdbid=%r); using playlist order",
-        tvdbid,
+    for v in vids:
+        if not v.get("title"):
+            continue
+        if _looks_like_extra(v["title"]):
+            log.info("season skip (extra): %s", v["title"][:60])
+            continue
+        ep = _explicit_episode(v["title"], season)
+        matched = None
+        if ep is not None and ep in season_eps:
+            matched = (ep, season_eps[ep].get("runtime"))
+        else:
+            best_ep, best_score = None, 0.0
+            for num, meta in season_eps.items():
+                sc = _episode_score(v["title"], meta.get("name") or "")
+                if sc > best_score:
+                    best_ep, best_score = num, sc
+            if best_ep is not None and best_score >= 0.6:
+                matched = (best_ep, season_eps[best_ep].get("runtime"))
+        if not matched:
+            log.info("season skip (no episode match): %s", v["title"][:60])
+            continue
+        ep_num, runtime = matched
+        if ep_num in used:
+            log.info("season skip (already mapped): %s", v["title"][:60])
+            continue
+        if not _duration_ok(v.get("duration"), runtime, EP_DURATION_BUFFER):
+            log.info(
+                "season skip (duration %ss vs %s min): %s",
+                v.get("duration") or "?", runtime, v["title"][:60],
+            )
+            continue
+        used.add(ep_num)
+        plan.append((ep_num, v["url"], v["title"]))
+    log.info(
+        "season mapped via %s: %d episodes from %d playlist videos "
+        "(buffer %ds)", source, len(plan), len(vids), EP_DURATION_BUFFER,
     )
-    for i, v in enumerate(vids, 1):
-        plan.append((i, v["url"], v["title"]))
+    plan.sort(key=lambda x: x[0])
     return plan
 
 
