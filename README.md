@@ -171,7 +171,31 @@ stay clean. The real YouTube title is also sent as `<description>`.
 `RESOLVE_TOP` probe get no `resolution`/`language` attrs. `size` is a
 resolution-aware estimate of the resulting file (bitrate per quality tier,
 e.g. ~0.8 Mbps at 360p up to ~12 Mbps at 2160p, plus audio), since the real
-download size is only known after yt-dlp runs.
+download size is only known after yt-dlp runs. Setting `YT_CODEC` scales the
+estimate to match the chosen codec (av1 baseline, vp9 ×1.4, h264 ×2.0).
+
+**Video codec choice (`YT_CODEC`).** `auto` (default) keeps yt-dlp's stock
+selection — for YouTube that is AV1 (`av01`) at every resolution. The explicit
+choices `av1`, `vp9` and `h264` restrict downloads to that video codec and
+fall back to the generic best format when the codec is unavailable, so a
+download can never fail because of the preference. Known limits:
+
+- **h264 caps at 1080p** — YouTube's public clients expose AVC (avc1) streams
+  only up to 1080p. Requesting h264 for a 4K video silently downloads 1080p
+  (no error). Use `av1`/`vp9` for full resolution.
+- **SABR-restricted videos are 360p regardless** — such videos only expose a
+  single 360p avc1 stream to yt-dlp until a GVS PO token unlocks high-res
+  formats (see the SABR section below). Until then every codec choice yields
+  360p.
+- **No-ffmpeg hosts get 360p regardless** — without ffmpeg yt-dlp can only
+  grab a single combined file, and YouTube serves one only at 360p. Any
+  higher resolution needs the merge path, so install ffmpeg for quality.
+- The `size` estimate reflects the codec multiplier, but the *actual* file
+  can differ (e.g. a SABR 360p download is far smaller than its estimate).
+
+The same `YT_CODEC` is read by both the indexer (size estimate) and the
+download spoofer (format selection), so they stay consistent. There is no
+h265/HEVC option because YouTube's public clients do not expose HEVC streams.
 
 **Authentication**
 
@@ -203,6 +227,7 @@ key: `youtubeindexer` (set `YT_INDEXER_API_KEY` to change it).
 | `RESOLVE_TOP` | Passed through to the search script |
 | `PLAYER_CLIENT` | Passed through to the search script (see the script env table) |
 | `POT_PROVIDER` | Passed through to the search script (see the script env table) |
+| `YT_CODEC` | Video codec the downloader will use, `auto`/`av1`/`vp9`/`h264` (default `auto`). Also scales the reported Torznab `size` (av1 baseline, vp9 ×1.4, h264 ×2.0) so the size tracks what is downloaded. See the codec notes below |
 | `TVMAZE_API` | TVMaze base URL (default `https://api.tvmaze.com`) |
 | `TVMAZE_TIMEOUT` | Per-lookup timeout seconds (default 5) |
 | `TVMAZE_CACHE_FILE` | Disk cache path (default `~/.cache/yt-indexarr/tvmaze.json`) |
@@ -249,10 +274,14 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_POT_PROVIDER` | Optional GVS PO token provider base URL for downloads (e.g. `http://127.0.0.1:4416`); empty (default) disables. Appended as `--extractor-args youtubepot-bgutilhttp:base_url=`. See SABR note below. |
 | `YT_QBT_DL_DIR` | Save path when the client sends none (default `~/downloads`) |
 | `YT_QBT_EP_DURATION_BUFFER` | ± seconds around a mapped episode's runtime when checking whether a playlist video is that episode (default 60; mirrors the search script's `EP_DURATION_BUFFER`) |
+| `YT_CODEC` | Video codec for downloads, `auto`/`av1`/`vp9`/`h264` (default `auto`). Falls back to best format when the codec is unavailable. See the codec notes in the indexer section. Shared with the indexer's size estimate |
 | `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
 
 Without `ffmpeg`, downloads use a single-file best format preferring `mp4`
 (`b[ext=mp4]/b`); with `ffmpeg` installed it merges best video+audio into mp4.
+The `YT_CODEC` preference narrows the video stream to `av01`/`vp9`/`avc1` and
+always keeps a generic-best fallback, so an unavailable codec downgrades
+quality rather than failing the download.
 YouTube blocks some videos on yt-dlp's default player client (reported as
 "This video is not available"), so downloads and the search script's quality
 probe use a client fallback chain by default — high-resolution clients first

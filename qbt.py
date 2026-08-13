@@ -61,6 +61,11 @@ DL_DIR = os.environ.get("YT_QBT_DL_DIR", os.path.expanduser("~/downloads"))
 # playlist video is the real episode (vs a compilation/extras).  Matches the
 # search script's EP_DURATION_BUFFER.  Only used when season metadata exists.
 EP_DURATION_BUFFER = int(os.environ.get("YT_QBT_EP_DURATION_BUFFER", "60"))
+# Video codec preference for downloads: auto|av1|vp9|h264.  Auto keeps the
+# stock yt-dlp behaviour; the others restrict the video stream to that codec
+# and fall back to "best" when unavailable.  Shared with the indexer's size
+# estimate via the same YT_CODEC var, so the reported size tracks the codec.
+CODEC = os.environ.get("YT_CODEC", "auto").strip().lower()
 LOG_LEVEL = os.environ.get("YT_QBT_LOG_LEVEL", "INFO")
 
 log = logging.getLogger("yt-qbt")
@@ -371,6 +376,39 @@ def _map_videos_to_episodes(vids, tvdbid, season):
     return plan
 
 
+_VIDEO_PREFIX = {
+    "av1": "av01",
+    "vp9": "vp9",
+    "h264": "avc1",
+}
+
+
+def _format_spec(codec, have_ffmpeg):
+    """Return (fmt, merge) for a video codec preference and ffmpeg availability.
+
+    auto keeps yt-dlp's stock selection.  av1/vp9/h264 restrict the video
+    stream to that codec's VCODEC prefix and fall back to the generic best
+    format if the codec is not offered (e.g. h264 on a 4K video, or any
+    codec on a SABR-restricted video served at 360p only).
+    """
+    if codec not in _VIDEO_PREFIX:
+        codec = "auto"
+    if not have_ffmpeg:
+        # Single-file only (no merge).  YouTube serves a combined stream just
+        # for 360p, so anything better needs ffmpeg regardless of codec.
+        if codec == "auto":
+            return "b[ext=mp4]/b", []
+        pref = _VIDEO_PREFIX[codec]
+        return f"b[ext=mp4][vcodec^={pref}]/b[ext=mp4]/b", []
+    base = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio"
+    if codec == "auto":
+        return f"{base}/b[ext=mp4]/b", ["--merge-output-format", "mp4"]
+    pref = _VIDEO_PREFIX[codec]
+    return (f"bestvideo[vcodec^={pref}]+bestaudio[ext=m4a]/"
+            f"bestvideo[vcodec^={pref}]+bestaudio/{base}/b[ext=mp4]/b",
+            ["--merge-output-format", "mp4"])
+
+
 def _run_season_download(t):
     """Download a whole season playlist, one file per episode."""
     dl_dir = _download_dir(t)
@@ -400,12 +438,7 @@ def _run_season_download(t):
             t.error = "no playlist videos mapped to episodes"
         return
 
-    if shutil.which("ffmpeg"):
-        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/b[ext=mp4]/b"
-        merge = ["--merge-output-format", "mp4"]
-    else:
-        fmt = "b[ext=mp4]/b"
-        merge = []
+    fmt, merge = _format_spec(CODEC, bool(shutil.which("ffmpeg")))
     extractor_args = []
     if PLAYER_CLIENT:
         extractor_args = ["--extractor-args",
@@ -499,13 +532,7 @@ def _run_download(t):
         return
     base = _sanitize(t.name)
     out = os.path.join(dl_dir, base + ".%(ext)s")
-    # No ffmpeg on this box -> single-file best format, prefer mp4.
-    if shutil.which("ffmpeg"):
-        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/b[ext=mp4]/b"
-        merge = ["--merge-output-format", "mp4"]
-    else:
-        fmt = "b[ext=mp4]/b"
-        merge = []
+    fmt, merge = _format_spec(CODEC, bool(shutil.which("ffmpeg")))
     # YouTube blocks some videos on yt-dlp's default player client (seen as
     # "This video is not available"); the android client usually still serves
     # them. Set YT_QBT_PLAYER_CLIENT to "" to disable the override.

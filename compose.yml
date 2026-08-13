@@ -31,6 +31,7 @@ services:
       - YT_QBT_PASSWORD=change-me
       - YT_QBT_REQUIRE_AUTH=0
       - YT_QBT_DL_DIR=/data/downloads
+      # - YT_CODEC=auto|av1|vp9|h264   # video codec for downloads + size estimate (default auto)
       # - YT_QBT_YTDLP=yt-dlp
       # - YT_QBT_PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
       - YT_QBT_POT_PROVIDER=http://pot:4416

@@ -178,14 +178,25 @@ _RES_BITRATE = {
     "0": 1.5,
 }
 
+# Relative file-size for a given video codec vs the AV1-sized baseline table
+# above (measured on live YouTube formats: vp9 ~1.4x, h264 ~2.0x at equal
+# resolution).  auto/av1 stay at 1.0.  Shared with the downloader via YT_CODEC.
+_CODEC_MULT = {
+    "vp9": 1.4,
+    "h264": 2.0,
+}
+
 
 def estimate_size(duration: int, resolution: str = "") -> int:
     """Rough size estimate for a video of given duration in seconds.
 
     Video bitrate chosen from the resolution (falling back to ~1.5 Mbps),
-    plus 128 kbps audio and overhead.
+    plus 128 kbps audio and overhead.  Scaled by the YT_CODEC video codec
+    choice so the reported size tracks what the downloader will actually
+    produce (h264/vp9 files are larger than AV1 for the same quality).
     """
     mbit = _RES_BITRATE.get(str(resolution).split("p", 1)[0], 1.5)
+    mbit *= _CODEC_MULT.get(os.environ.get("YT_CODEC", "auto").strip().lower(), 1.0)
     return int(duration * ((mbit * 1024 * 1024 / 8) + (128 * 1024 / 8)))
 
 
