@@ -322,7 +322,7 @@ A prebuilt image is published to **GHCR** on every push to `main` (and on
 `v*` tags), for `linux/amd64` and `linux/arm64`:
 
 ```
-ghcr.io/fosser-glitch/yt-indexarr
+ghcr.io/fosserglitch902/yt-indexarr
 ```
 
 The container runs **both** the indexer (`9117`) and the download spoofer
@@ -340,14 +340,14 @@ docker run -d \
   -p 9117:9117 \
   -p 9177:9177 \
   -v yt-indexarr-data:/data \
-  ghcr.io/fosser-glitch/yt-indexarr:latest
+  ghcr.io/fosserglitch902/yt-indexarr:latest
 ```
 
 ```yaml
 # docker-compose.yml (see ./compose.yml in this repo for the full file)
 services:
   yt-indexarr:
-    image: ghcr.io/fosser-glitch/yt-indexarr:latest
+    image: ghcr.io/fosserglitch902/yt-indexarr:latest
     container_name: yt-indexarr
     restart: unless-stopped
     ports:

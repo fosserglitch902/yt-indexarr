@@ -1,6 +1,6 @@
 services:
   yt-indexarr:
-    image: ghcr.io/fosser-glitch/yt-indexarr:latest
+    image: ghcr.io/fosserglitch902/yt-indexarr:latest
     container_name: yt-indexarr
     restart: unless-stopped
     ports:
