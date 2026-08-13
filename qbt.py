@@ -66,6 +66,13 @@ EP_DURATION_BUFFER = int(os.environ.get("YT_QBT_EP_DURATION_BUFFER", "60"))
 # and fall back to "best" when unavailable.  Shared with the indexer's size
 # estimate via the same YT_CODEC var, so the reported size tracks the codec.
 CODEC = os.environ.get("YT_CODEC", "auto").strip().lower()
+# Output container for merged downloads: mkv (default, holds every codec
+# incl. av01/vp9 + opus natively) or mp4 (max direct-play compatibility, but
+# cannot hold opus audio).  Only honoured when ffmpeg is available; without it
+# downloads stay single-file mp4 and the container cannot be changed.
+OUTPUT_EXT = os.environ.get("YT_QBT_OUTPUT_EXT", "mkv").strip().lower()
+if OUTPUT_EXT not in ("mkv", "mp4"):
+    OUTPUT_EXT = "mkv"
 LOG_LEVEL = os.environ.get("YT_QBT_LOG_LEVEL", "INFO")
 
 log = logging.getLogger("yt-qbt")
@@ -390,6 +397,13 @@ def _format_spec(codec, have_ffmpeg):
     stream to that codec's VCODEC prefix and fall back to the generic best
     format if the codec is not offered (e.g. h264 on a 4K video, or any
     codec on a SABR-restricted video served at 360p only).
+
+    The output container comes from OUTPUT_EXT.  mkv (default) holds every
+    codec YouTube serves, so the stream selection stays codec-agnostic and
+    av01/vp9+opus pairs flow through.  mp4 cannot hold opus audio, so the
+    selection biases to mp4/m4a-paired streams (h264/AAC) before merging.
+    Without ffmpeg there is no merge step: a single-file (combined) stream is
+    used and the container cannot be changed, so it stays mp4.
     """
     if codec not in _VIDEO_PREFIX:
         codec = "auto"
@@ -400,13 +414,23 @@ def _format_spec(codec, have_ffmpeg):
             return "b[ext=mp4]/b", []
         pref = _VIDEO_PREFIX[codec]
         return f"b[ext=mp4][vcodec^={pref}]/b[ext=mp4]/b", []
-    base = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio"
+    merge = ["--merge-output-format", OUTPUT_EXT]
+    if OUTPUT_EXT == "mp4":
+        # mp4 can't hold opus audio, so prefer m4a-paired mp4 streams.
+        base = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio"
+        if codec == "auto":
+            return f"{base}/b[ext=mp4]/b", merge
+        pref = _VIDEO_PREFIX[codec]
+        return (f"bestvideo[vcodec^={pref}]+bestaudio[ext=m4a]/"
+                f"bestvideo[vcodec^={pref}]+bestaudio/{base}/b[ext=mp4]/b",
+                merge)
+    # mkv holds every codec; keep the selection codec-agnostic so the best
+    # stream (incl. av01/vp9 + opus) flows through instead of h264/AAC.
     if codec == "auto":
-        return f"{base}/b[ext=mp4]/b", ["--merge-output-format", "mp4"]
+        return "bestvideo+bestaudio/b[ext=mp4]/b", merge
     pref = _VIDEO_PREFIX[codec]
-    return (f"bestvideo[vcodec^={pref}]+bestaudio[ext=m4a]/"
-            f"bestvideo[vcodec^={pref}]+bestaudio/{base}/b[ext=mp4]/b",
-            ["--merge-output-format", "mp4"])
+    return (f"bestvideo[vcodec^={pref}]+bestaudio/"
+            f"bestvideo+bestaudio/b[ext=mp4]/b", merge)
 
 
 def _run_season_download(t):

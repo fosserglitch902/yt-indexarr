@@ -277,13 +277,16 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_DL_DIR` | Save path when the client sends none (default `~/downloads`) |
 | `YT_QBT_EP_DURATION_BUFFER` | ± seconds around a mapped episode's runtime when checking whether a playlist video is that episode (default 60; mirrors the search script's `EP_DURATION_BUFFER`) |
 | `YT_CODEC` | Video codec for downloads, `auto`/`av1`/`vp9`/`h264` (default `auto`). Falls back to best format when the codec is unavailable. See the codec notes in the indexer section. Shared with the indexer's size estimate |
+| `YT_QBT_OUTPUT_EXT` | Output container for downloads, `mkv`/`mp4` (default `mkv`). `mkv` holds every codec YouTube serves (incl. av01/vp9 + opus), so the highest-quality stream flows through; `mp4` biases to h264/AAC-paired streams so direct-play stays universal (opaque to browsers/Apple) |
 | `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
 
 Without `ffmpeg`, downloads use a single-file best format preferring `mp4`
-(`b[ext=mp4]/b`); with `ffmpeg` installed it merges best video+audio into mp4.
-The `YT_CODEC` preference narrows the video stream to `av01`/`vp9`/`avc1` and
-always keeps a generic-best fallback, so an unavailable codec downgrades
-quality rather than failing the download.
+(`b[ext=mp4]/b`) and the container cannot be changed, so `YT_QBT_OUTPUT_EXT`
+only takes effect when ffmpeg is installed, where the merge step remuxes into
+the requested container (`mkv` by default). The `YT_CODEC` preference narrows
+the video stream to `av01`/`vp9`/`avc1` and always keeps a generic-best
+fallback, so an unavailable codec downgrades quality rather than failing the
+download.
 YouTube blocks some videos on yt-dlp's default player client (reported as
 "This video is not available"), so downloads and the search script's quality
 probe use a client fallback chain by default — high-resolution clients first
@@ -301,8 +304,8 @@ what was reported.
 When the added magnet's real URL is a YouTube *playlist* (from a full-season
 search), `qbt.py` switches to season mode: it enumerates the playlist with
 `yt-dlp --flat-playlist`, maps each video to an episode, and downloads one
-file per episode as `<Series> S0<N>E0<M>.mp4` in the torrent's download
-folder.
+file per episode as `<Series> S0<N>E0<M>.mkv` (or `.mp4` with
+`YT_QBT_OUTPUT_EXT=mp4`) in the torrent's download folder.
 
 Episode mapping prefers explicit `S03E24`-style tokens in the video title,
 then season episode metadata (titles + per-episode runtimes) from **TheTVDB**
