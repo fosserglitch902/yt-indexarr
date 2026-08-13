@@ -94,6 +94,25 @@ def _sanitize(name):
     return name or "video"
 
 
+# Total-size parser for yt-dlp --newline progress lines, e.g.
+#   [download]  45.3% of ~432.10MiB at    8.12MiB/s ETA 00:38
+# Returns bytes or None. The "~" marks an approximate size (server estimate);
+# we treat it as good enough for reporting progress.
+_SIZE_RE = re.compile(r"of\s+~?\s*([\d.]+)\s*(ti|gi|mi|ki)?b\b", re.IGNORECASE)
+_SIZE_MULT = {"": 1, "ki": 1 << 10, "mi": 1 << 20, "gi": 1 << 30, "ti": 1 << 40}
+
+
+def _parse_total_size(line):
+    m = _SIZE_RE.search(line)
+    if not m:
+        return None
+    try:
+        val = float(m.group(1))
+    except ValueError:
+        return None
+    return int(val * _SIZE_MULT[(m.group(2) or "").lower()])
+
+
 def _parse_magnet(url):
     """Extract btih hash, dn, x.ytindexer and tvdbid from a magnet, or None."""
     if not url.lower().startswith("magnet:?"):
@@ -503,12 +522,22 @@ def _run_season_download(t):
             t.proc = proc
             t.state = "downloading"
         pct = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
+        ep_size = 0
         for line in proc.stdout:
             m = pct.search(line)
             if m:
                 slot = float(m.group(1)) / 100.0
+                if not ep_size:
+                    ep_size = _parse_total_size(line) or 0
                 with t.lock:
                     t.progress = min(0.999, (done + slot) / total)
+                    if ep_size:
+                        # Rough whole-season estimate: completed episodes get
+                        # their real size; the rest are guessed at this
+                        # episode's size so the Sonarr bar moves smoothly.
+                        est = int(ep_size * (done + slot))
+                        t.size = est
+                        t.downloaded = int(est * t.progress)
         rc = proc.wait()
         if rc != 0:
             log.warning("season item %s failed (rc=%s)", ep_tag, rc)
@@ -598,7 +627,15 @@ def _run_download(t):
         m = pct.search(line)
         if m:
             with t.lock:
-                t.progress = min(0.999, float(m.group(1)) / 100.0)
+                slot = float(m.group(1)) / 100.0
+                t.progress = min(0.999, slot)
+                total = _parse_total_size(line)
+                if total and t.size == 0:
+                    t.size = total
+                if t.size:
+                    # scale downloaded/amount_left live so Sonarr's activity
+                    # bar animates; exactness isn't important, closeness is.
+                    t.downloaded = int(t.size * t.progress)
     rc = proc.wait()
     if rc == 0:
         found = None
