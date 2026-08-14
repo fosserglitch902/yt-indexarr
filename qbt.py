@@ -86,6 +86,11 @@ MAX_PARALLEL = max(1, int(os.environ.get("YT_QBT_MAX_PARALLEL", "2")))
 # (default) disables the flag.
 COOKIES = os.environ.get("YT_QBT_COOKIES", "").strip()
 COOKIES_ARG = ([f"--cookies", COOKIES] if COOKIES else [])
+# Pacing between YouTube requests, in seconds.  Applied once before each
+# episode download and again before every retry rung of the fallback ladder, so
+# even without cookies a 5s gap between requests looks far less bot-like to
+# YouTube (fewer 429/403s).  Tune here if the server's IP reputation improves.
+DL_DELAY = 5.0
 LOG_LEVEL = os.environ.get("YT_QBT_LOG_LEVEL", "INFO")
 
 log = logging.getLogger("yt-qbt")
@@ -484,16 +489,16 @@ def _fallback_attempts(fmt, merge):
     """(label, fmt, merge) ladder for one download item, best quality first.
 
     SABR-only videos (yt-dlp#12482) can list high-res formats once a PO token
-    is presented yet still refuse the stream fetch with HTTP 403, so a plain
-    retry (fresh PO token) and a guaranteed combined-stream fallback are tried
-    before the item is given up on.  SABR-restricted videos expose their 360p
-    combined mp4 to every client, so the final rung always resolves.
+    is presented yet still refuse the stream fetch with HTTP 403, so three
+    PO-token attempts (initial + two retries, each spaced DL_DELAY apart) and a
+    guaranteed combined-stream fallback are tried before the item is given up
+    on.  SABR-restricted videos expose their 360p combined mp4 to every client,
+    so the final rung always resolves.
     """
-    return [
-        ("best", fmt, merge),
-        ("retry", fmt, merge),
-        ("safe", "b[ext=mp4]/b", ()),
-    ]
+    ladder = [("best", fmt, merge)]
+    ladder += [(f"retry{i}", fmt, merge) for i in (1, 2)]
+    ladder.append(("safe", "b[ext=mp4]/b", ()))
+    return ladder
 
 
 def _run_ytdlp(t, cmd, on_line):
@@ -603,7 +608,14 @@ def _run_season_download(t):
                     t.size = est
                     t.downloaded = int(est * t.progress)
 
-        for label, afmt, amerge in _fallback_attempts(fmt, merge):
+        # Pacing: DL_DELAY before each episode so rapid sequential downloads
+        # don't trip YouTube rate-limit / bot checks.
+        time.sleep(DL_DELAY)
+        for i, (label, afmt, amerge) in enumerate(
+                _fallback_attempts(fmt, merge)):
+            if i:
+                # Pacing: DL_DELAY between retry rungs as well.
+                time.sleep(DL_DELAY)
             cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
                    *COOKIES_ARG, "-f", afmt, *amerge, "-o", out, "--", url]
             rc, tail = _run_ytdlp(t, cmd, on_line)
@@ -731,7 +743,12 @@ def _run_download_locked(t):
                 t.downloaded = int(t.size * t.progress)
 
     found = None
-    for label, afmt, amerge in _fallback_attempts(fmt, merge):
+    # Pacing: DL_DELAY before the download and between retry rungs.
+    time.sleep(DL_DELAY)
+    for i, (label, afmt, amerge) in enumerate(
+            _fallback_attempts(fmt, merge)):
+        if i:
+            time.sleep(DL_DELAY)
         cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
                *COOKIES_ARG, "-f", afmt, *amerge, "-o", out, "--", t.real_url]
         rc, tail = _run_ytdlp(t, cmd, on_line)

@@ -283,10 +283,13 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
 
 Each item (single video or season episode) is attempted through a small fallback
-ladder: the configured best format, a plain retry, then `b[ext=mp4]/b`. This
-handles SABR-only videos (see the SABR note) that list their highest format once
-a PO token is presented but still refuse the stream fetch with HTTP 403 — the
-final rung keeps such episodes at a working 360p instead of failing them.
+ladder: the configured best format, two plain retries (three PO-token attempts
+in total), then `b[ext=mp4]/b`. Each episode download and every retry is spaced
+`DL_DELAY` (5s) apart in `qbt.py` so rapid sequential requests look less
+bot-like to YouTube. This handles SABR-only videos (see the SABR note) that list
+their highest format once a PO token is presented but still refuse the stream
+fetch with HTTP 403 — the final rung keeps such episodes at a working 360p
+instead of failing them.
 
 Without `ffmpeg`, downloads use a single-file best format preferring `mp4`
 (`b[ext=mp4]/b`) and the container cannot be changed, so `YT_QBT_OUTPUT_EXT`
@@ -360,8 +363,9 @@ Even with a PO token, YouTube can still return **HTTP 403 on the stream fetch**
 for SABR-restricted videos (the token makes the high-res format *list*, but the
 server may still refuse the fetch depending on session/IP reputation — this is
 why SABR failures look "random" episode-to-episode). The download spoofer
-already retries each item best → retry → `b[ext=mp4]/b` so such episodes still
-complete at 360p. To recover full quality reliably, provide browsers cookies via
+already retries each item best → retry → retry → `b[ext=mp4]/b`, spaced 5s
+apart, so such episodes still complete at 360p. To recover full quality
+reliably, provide browsers cookies via
 `YT_QBT_COOKIES` (see the env table) — logged-in, non-bot-looking traffic is far
 less likely to be 403/SABR-flagged. Export them on a machine with your browser
 open (a "Export Cookies" extension, or Chrome's `--dump-cookies`), then copy the
