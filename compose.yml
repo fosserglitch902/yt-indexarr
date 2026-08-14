@@ -5,9 +5,9 @@ services:
     restart: unless-stopped
     ports:
       - "9117:9117"   # Torznab indexer
-      - "9177:9177"   # qBittorrent download spoofer
+      - "9177:9177"   # qBittorrent download spoofer + dashboard UI
     volumes:
-      - yt-indexarr-data:/data   # downloads (default /data/downloads)
+      - yt-indexarr-data:/data   # downloads (default /data/downloads) + history.json + config.json + cookies.txt
     environment:
       # --- indexer (indexer.py) ---
       - YT_INDEXER_HOST=0.0.0.0
@@ -39,6 +39,9 @@ services:
       # - YT_QBT_COOKIES=/data/cookies.txt   # Netscape-format browser cookies for yt-dlp (reduces 403/SABR failures)
       # - YT_QBT_MAX_PARALLEL=2   # max concurrent downloads across torrents (default 2)
       # - YT_QBT_LOG_LEVEL=INFO
+      # - YT_QBT_HISTORY_FILE=/data/history.json   # dashboard history (default)
+      # - YT_QBT_UI_DIR=/app/ui                    # dashboard static files (default)
+      # - YT_UI_CONFIG_FILE=/data/config.json      # dashboard writes settings here; env vars win
       # --- episode-title lookup: TVMaze ---
       # - TVMAZE_API=https://api.tvmaze.com
       # - TVMAZE_TIMEOUT=5

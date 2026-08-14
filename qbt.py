@@ -37,6 +37,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import config
 import tvdb
 import tvmaze
 
@@ -45,62 +46,92 @@ WEBAPI_VERSION = "2.11.3"
 
 HOST = os.environ.get("YT_QBT_HOST", "0.0.0.0")
 PORT = int(os.environ.get("YT_QBT_PORT", "9177"))
-USERNAME = os.environ.get("YT_QBT_USERNAME", "admin")
-PASSWORD = os.environ.get("YT_QBT_PASSWORD", "adminadmin")
-REQUIRE_AUTH = os.environ.get("YT_QBT_REQUIRE_AUTH", "0").strip().lower() in (
-    "1", "true", "yes", "on",
-)
 YTDLP = os.environ.get("YT_QBT_YTDLP", "yt-dlp")
 PLAYER_CLIENT = os.environ.get(
     "YT_QBT_PLAYER_CLIENT",
     "tv_embedded,android_vr,web,tv_simply,android").strip()
-# Optional PO token provider (e.g. http://pot:4416 from the bgutil
-# bgutil-ytdlp-pot-provider container). Empty disables the feature. Requires
-# the bgutil-ytdlp-pot-provider plugin + a JS runtime (deno/node) installed.
-# POT_PROVIDER is shared with the search script (one value, one name).  The
-# old YT_QBT_POT_PROVIDER name still works but is deprecated.
-POT_PROVIDER = (os.environ.get("POT_PROVIDER", "").strip()
-                or os.environ.get("YT_QBT_POT_PROVIDER", "").strip())
 DL_DIR = os.environ.get("YT_QBT_DL_DIR", os.path.expanduser("~/downloads"))
 # +/- seconds around an episode's reported runtime when checking whether a
 # playlist video is the real episode (vs a compilation/extras).  Matches the
 # search script's EP_DURATION_BUFFER.  Only used when season metadata exists.
 EP_DURATION_BUFFER = int(os.environ.get("YT_QBT_EP_DURATION_BUFFER", "60"))
-# Video codec preference for downloads: auto|av1|vp9|h264.  Auto keeps the
-# stock yt-dlp behaviour; the others restrict the video stream to that codec
-# and fall back to "best" when unavailable.  Shared with the indexer's size
-# estimate via the same YT_CODEC var, so the reported size tracks the codec.
-CODEC = os.environ.get("YT_CODEC", "auto").strip().lower()
-# Output container for merged downloads: mkv (default, holds every codec
-# incl. av01/vp9 + opus natively) or mp4 (max direct-play compatibility, but
-# cannot hold opus audio).  Only honoured when ffmpeg is available; without it
-# downloads stay single-file mp4 and the container cannot be changed.
-OUTPUT_EXT = os.environ.get("YT_QBT_OUTPUT_EXT", "mkv").strip().lower()
-if OUTPUT_EXT not in ("mkv", "mp4"):
-    OUTPUT_EXT = "mkv"
 # Maximum concurrent yt-dlp processes across all torrents.  Season packs and
 # single videos each hold one slot while downloading; extra torrents wait in a
 # Sonarr-visible "Queued" state.  Lower values throttle YouTube requests to
 # reduce rate-limit / bot-check failures on rapid sequential downloads.
 MAX_PARALLEL = max(1, int(os.environ.get("YT_QBT_MAX_PARALLEL", "2")))
-# Optional browser cookies file (Netscape format) passed to yt-dlp as
-# --cookies.  Logged-in cookies make downloads look far more legitimate and are
-# the most reliable way to reduce YouTube 403/SABR-restriction failures.  Empty
-# (default) disables the flag.
-COOKIES = os.environ.get("YT_QBT_COOKIES", "").strip()
-COOKIES_ARG = ([f"--cookies", COOKIES] if COOKIES else [])
 # Pacing between YouTube requests, in seconds.  Applied once before each
 # episode download and again before every retry rung of the fallback ladder, so
 # even without cookies a 5s gap between requests looks far less bot-like to
 # YouTube (fewer 429/403s).  Tune here if the server's IP reputation improves.
 DL_DELAY = 5.0
-LOG_LEVEL = os.environ.get("YT_QBT_LOG_LEVEL", "INFO")
 
 log = logging.getLogger("yt-qbt")
 logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
+    level=getattr(
+        logging,
+        os.environ.get("YT_QBT_LOG_LEVEL", "INFO").upper(),
+        logging.INFO,
+    ),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+
+# The settings below resolve lazily via config (env > /data/config.json >
+# default) so the dashboard UI can change them without a restart; docker-compose
+# env vars still win over any UI edit.
+def _username():
+    return config.get("YT_QBT_USERNAME", "admin")
+
+
+def _password():
+    return config.get("YT_QBT_PASSWORD", "adminadmin")
+
+
+def _auth_enabled():
+    return config.get("YT_QBT_REQUIRE_AUTH", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _pot_provider():
+    # POT_PROVIDER is shared with the search script (one value, one name).  The
+    # old YT_QBT_POT_PROVIDER name still works but is deprecated.
+    return (config.get("POT_PROVIDER", "").strip()
+            or os.environ.get("YT_QBT_POT_PROVIDER", "").strip())
+
+
+def _codec():
+    # Video codec preference for downloads: auto|av1|vp9|h264.  Shared with the
+    # indexer's size estimate via the same YT_CODEC var.
+    return config.get("YT_CODEC", "auto").strip().lower()
+
+
+def _output_ext():
+    # Output container for merged downloads: mkv (default, holds every codec
+    # incl. av01/vp9 + opus natively) or mp4 (max direct-play compatibility, but
+    # cannot hold opus audio).  Only honoured when ffmpeg is available.
+    ext = config.get("YT_QBT_OUTPUT_EXT", "mkv").strip().lower()
+    return ext if ext in ("mkv", "mp4") else "mkv"
+
+
+def _cookies_path():
+    # Optional Netscape-format browser cookies file passed to yt-dlp as
+    # --cookies.  Empty disables the flag.
+    return config.get("YT_QBT_COOKIES", "").strip()
+
+
+def _cookies_arg():
+    path = _cookies_path()
+    return [f"--cookies", path] if path else []
+
+
+def _apply_log_level():
+    log.setLevel(getattr(
+        logging,
+        config.get("YT_QBT_LOG_LEVEL", "INFO").upper(),
+        logging.INFO,
+    ))
+
 
 if os.environ.get("YT_QBT_POT_PROVIDER", "").strip():
     log.warning(
@@ -110,14 +141,51 @@ if os.environ.get("YT_QBT_POT_PROVIDER", "").strip():
 
 _DL_SEM = threading.BoundedSemaphore(MAX_PARALLEL)
 
-if COOKIES:
-    log.info("using yt-dlp cookies from %s", COOKIES)
+if _cookies_path():
+    log.info("using yt-dlp cookies from %s", _cookies_path())
 
 _PUBLIC_PATHS = {
     "/api/v2/auth/login",
     "/api/v2/app/version",
     "/api/v2/app/webapiVersion",
 }
+
+# Dashboard UI: a tiny vanilla-JS page served from ./ui plus a small JSON API,
+# all on the downloader's own port.  No framework, no database, no image
+# proxying (posters/thumbnails are URL strings the browser fetches directly).
+UI_DIR = os.environ.get(
+    "YT_QBT_UI_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+)
+COOKIES_FILE_DEFAULT = "/data/cookies.txt"
+_UI_MIME = {
+    "html": "text/html; charset=utf-8",
+    "css": "text/css; charset=utf-8",
+    "js": "application/javascript; charset=utf-8",
+    "json": "application/json",
+    "svg": "image/svg+xml",
+    "png": "image/png",
+    "ico": "image/x-icon",
+}
+
+# Settings exposed to the dashboard: (env key, kind, secret, options, default).
+# kind is text | password | select | bool.  docker-compose env vars always win
+# over a UI edit (config resolves env first); each row flags "set by compose".
+UI_SETTINGS = [
+    ("TVDB_API_KEY", "password", True, None, ""),
+    ("POT_PROVIDER", "text", False, None, ""),
+    ("YT_QBT_OUTPUT_EXT", "select", False, ["mkv", "mp4"], "mkv"),
+    ("YT_CODEC", "select", False, ["auto", "av1", "vp9", "h264"], "auto"),
+    ("YT_INDEXER_LOG_LEVEL", "select", False,
+     ["DEBUG", "INFO", "WARNING", "ERROR"], "INFO"),
+    ("YT_QBT_LOG_LEVEL", "select", False,
+     ["DEBUG", "INFO", "WARNING", "ERROR"], "INFO"),
+    ("YT_INDEXER_API_KEY", "text", True, None, "youtubeindexer"),
+    ("YT_INDEXER_REQUIRE_KEY", "bool", False, None, "0"),
+    ("YT_QBT_USERNAME", "text", False, None, "admin"),
+    ("YT_QBT_PASSWORD", "password", True, None, "adminadmin"),
+    ("YT_QBT_REQUIRE_AUTH", "bool", False, None, "0"),
+]
+_UI_SETTINGS_MAP = {s[0]: s for s in UI_SETTINGS}
 
 
 def _sanitize(name):
@@ -146,7 +214,7 @@ def _parse_total_size(line):
 
 
 def _parse_magnet(url):
-    """Extract btih hash, dn, x.ytindexer and tvdbid from a magnet, or None."""
+    """Extract btih hash, dn, x.ytindexer, tvdbid and channel, or None."""
     if not url.lower().startswith("magnet:?"):
         return None
     try:
@@ -164,6 +232,8 @@ def _parse_magnet(url):
         info["x.ytindexer"] = params["x.ytindexer"][0]
     if params.get("x.ytindexertvdbid"):
         info["tvdbid"] = params["x.ytindexertvdbid"][0]
+    if params.get("x.ytindexerchannel"):
+        info["channel"] = params["x.ytindexerchannel"][0]
     return info
 
 
@@ -177,7 +247,7 @@ def _b64url_decode(value):
 
 class Torrent:
     def __init__(self, hash_, name, save_path, category, tags, real_url, paused,
-                 tvdbid=""):
+                 tvdbid="", channel=""):
         self.hash = hash_
         self.name = name
         self.save_path = save_path
@@ -185,6 +255,10 @@ class Torrent:
         self.tags = tags or ""
         self.real_url = real_url
         self.tvdbid = tvdbid or ""
+        self.channel = channel or ""
+        self.poster_url = ""
+        self.thumbnail_url = ""
+        self.episodes = []
         self.lock = threading.Lock()
         self.progress = 0.0
         self.state = "pausedDL" if paused else "forcedDL"
@@ -248,6 +322,125 @@ def _categories_dict():
 
 def _download_dir(t):
     return os.path.join(t.save_path, _sanitize(t.name))
+
+
+# ---- dashboard history (persisted, survives restarts) -----------------------
+
+HISTORY_FILE = os.environ.get("YT_QBT_HISTORY_FILE", "/data/history.json")
+_HISTORY_FLUSH_EVERY = 5.0
+_history = {}
+_history_lock = threading.Lock()
+_history_dirty = False
+
+
+def _torrent_record(t):
+    """Serializable snapshot of a torrent for the history file / UI."""
+    with t.lock:
+        rec = {
+            "hash": t.hash,
+            "name": t.name,
+            "title": t.name,
+            "url": t.real_url,
+            "is_playlist": _is_playlist_url(t.real_url),
+            "channel": t.channel,
+            "category": t.category,
+            "tags": t.tags,
+            "tvdbid": t.tvdbid,
+            "poster_url": t.poster_url,
+            "thumbnail_url": t.thumbnail_url,
+            "state": t.state,
+            "size": t.size,
+            "progress": t.progress,
+            "added_on": t.added_on,
+            "completion_on": t.completion_on,
+            "error": t.error,
+            "episodes": [
+                {
+                    "num": e.get("num"),
+                    "index": e.get("num"),
+                    "url": e.get("url", ""),
+                    "title": e.get("title", ""),
+                    "state": e.get("state", ""),
+                    "size": e.get("size", 0),
+                    "completion_on": e.get("completion_on", 0),
+                    "error": e.get("error"),
+                }
+                for e in t.episodes
+            ],
+        }
+    return rec
+
+
+def _record_torrent(t):
+    """Refresh t's record in the in-memory history (flushed periodically)."""
+    global _history_dirty
+    with _history_lock:
+        _history[t.hash] = _torrent_record(t)
+        _history_dirty = True
+
+
+def _history_save():
+    global _history_dirty
+    with _history_lock:
+        data = list(_history.values())
+        _history_dirty = False
+    try:
+        os.makedirs(os.path.dirname(HISTORY_FILE) or ".", exist_ok=True)
+        tmp = HISTORY_FILE + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(data, fh, indent=1, sort_keys=True)
+        os.replace(tmp, HISTORY_FILE)
+    except OSError:
+        log.warning("could not write history file: %s", HISTORY_FILE)
+
+
+def _history_load():
+    try:
+        with open(HISTORY_FILE) as fh:
+            data = json.load(fh)
+        with _history_lock:
+            for rec in data:
+                h = rec.get("hash")
+                if h:
+                    _history[h] = rec
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def _history_loop():
+    while True:
+        time.sleep(_HISTORY_FLUSH_EVERY)
+        if _history_dirty:
+            _history_save()
+
+
+# ---- series poster / thumbnail metadata -------------------------------------
+
+def _youtube_id(url):
+    m = re.search(r"(?:[?&]v=|/watch/|youtu\.be/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else None
+
+
+def _youtube_thumbnail(url):
+    vid = _youtube_id(url)
+    return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else ""
+
+
+def _fill_metadata(t):
+    """Best-effort series poster / thumbnail for a torrent (background)."""
+    if t.poster_url or t.thumbnail_url:
+        return
+    thumb = _youtube_thumbnail(t.real_url)
+    poster = ""
+    if t.tvdbid and str(t.tvdbid).isdigit():
+        try:
+            poster = tvmaze.poster_by_tvdbid(t.tvdbid) or ""
+        except Exception:  # noqa: BLE001
+            poster = ""
+    with t.lock:
+        t.thumbnail_url = t.thumbnail_url or thumb
+        t.poster_url = poster
+    _record_torrent(t)
 
 
 def _is_playlist_url(url):
@@ -468,8 +661,8 @@ def _format_spec(codec, have_ffmpeg):
             return "b[ext=mp4]/b", []
         pref = _VIDEO_PREFIX[codec]
         return f"b[ext=mp4][vcodec^={pref}]/b[ext=mp4]/b", []
-    merge = ["--merge-output-format", OUTPUT_EXT]
-    if OUTPUT_EXT == "mp4":
+    merge = ["--merge-output-format", _output_ext()]
+    if _output_ext() == "mp4":
         # mp4 can't hold opus audio, so prefer m4a-paired mp4 streams.
         base = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio"
         if codec == "auto":
@@ -529,11 +722,11 @@ def _cookies_stale_hint(tail):
                      r"Sign in to confirm|Sign in with Google", blob,
                      re.IGNORECASE):
         return ""
-    key = "stale" if COOKIES else "none"
+    key = "stale" if _cookies_path() else "none"
     if key in _COOKIE_HINTS_ISSUED:
         return ""
     _COOKIE_HINTS_ISSUED.add(key)
-    if COOKIES:
+    if _cookies_path():
         return ("cookies may be stale - re-export cookies.txt; "
                 "if 403s persist the video is likely still SABR-restricted")
     return ("403 detected - consider setting YT_QBT_COOKIES "
@@ -584,6 +777,8 @@ def _run_season_download(t):
         with t.lock:
             t.state = "error"
             t.error = f"cannot create download dir: {e}"
+        _record_torrent(t)
+        _history_save()
         return
     series, season = _parse_season_info(t.name)
     if not season:
@@ -605,14 +800,14 @@ def _run_season_download(t):
             t.error = "no playlist videos mapped to episodes"
         return
 
-    fmt, merge = _format_spec(CODEC, bool(shutil.which("ffmpeg")))
+    fmt, merge = _format_spec(_codec(), bool(shutil.which("ffmpeg")))
     extractor_args = []
     if PLAYER_CLIENT:
         extractor_args = ["--extractor-args",
                           f"youtube:player_client={PLAYER_CLIENT}"]
-    if POT_PROVIDER:
+    if _pot_provider():
         extractor_args += ["--extractor-args",
-                           f"youtubepot-bgutilhttp:base_url={POT_PROVIDER}"]
+                           f"youtubepot-bgutilhttp:base_url={_pot_provider()}"]
 
     total = len(plan)
     done = 0
@@ -622,6 +817,12 @@ def _run_season_download(t):
     for ep, url, vtitle in plan:
         ep_tag = f"S{season:02d}E{ep:02d}"
         out = os.path.join(dl_dir, f"{series} {ep_tag}.%(ext)s")
+        ep_rec = {
+            "num": ep, "url": url, "title": vtitle,
+            "state": "downloading", "size": 0, "completion_on": 0, "error": None,
+        }
+        t.episodes.append(ep_rec)
+        _record_torrent(t)
         log.info(
             "season item start %s/%s: %s (%s)",
             done + 1, total, ep_tag, vtitle,
@@ -656,7 +857,7 @@ def _run_season_download(t):
                 # Pacing: DL_DELAY between retry rungs as well.
                 time.sleep(DL_DELAY)
             cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
-                   *COOKIES_ARG, "-f", afmt, *amerge, "-o", out, "--", url]
+                   *_cookies_arg(), "-f", afmt, *amerge, "-o", out, "--", url]
             rc, tail = _run_ytdlp(t, cmd, on_line)
             if rc == -1:
                 log.warning("cannot launch yt-dlp for %s: %s",
@@ -687,12 +888,20 @@ def _run_season_download(t):
             completed_files.append(fp)
             size = os.path.getsize(fp)
             total_size += size
+            ep_rec["state"] = "completed"
+            ep_rec["size"] = size
+            ep_rec["completion_on"] = int(time.time())
+            _record_torrent(t)
             log.info(
                 "season item complete %s/%s: %s -> %s (%.0f MB, %ds)",
                 done + 1, total, ep_tag, os.path.basename(fp),
                 size / (1024 * 1024), int(time.time() - item_started),
             )
             break
+        if fp is None:
+            ep_rec["state"] = "error"
+            ep_rec["error"] = "all attempts failed"
+            _record_torrent(t)
         done += 1
         with t.lock:
             t.progress = (done / total) if done < total else 1.0
@@ -701,6 +910,8 @@ def _run_season_download(t):
         with t.lock:
             t.state = "error"
             t.error = "no episode files downloaded"
+        _record_torrent(t)
+        _history_save()
         return
     with t.lock:
         t.progress = 1.0
@@ -713,6 +924,8 @@ def _run_season_download(t):
         t.downloaded = total_size
         t.uploaded = total_size
         t.ratio = 1.0
+    _record_torrent(t)
+    _history_save()
     log.info(
         "season download complete: %s (%d episodes, %d MB)",
         t.hash[:8], len(completed_files), total_size // (1024 * 1024),
@@ -755,7 +968,7 @@ def _run_download_locked(t):
         return
     base = _sanitize(t.name)
     out = os.path.join(dl_dir, base + ".%(ext)s")
-    fmt, merge = _format_spec(CODEC, bool(shutil.which("ffmpeg")))
+    fmt, merge = _format_spec(_codec(), bool(shutil.which("ffmpeg")))
     # YouTube blocks some videos on yt-dlp's default player client (seen as
     # "This video is not available"); the android client usually still serves
     # them. Set YT_QBT_PLAYER_CLIENT to "" to disable the override.
@@ -763,9 +976,9 @@ def _run_download_locked(t):
     if PLAYER_CLIENT:
         extractor_args = ["--extractor-args",
                           f"youtube:player_client={PLAYER_CLIENT}"]
-    if POT_PROVIDER:
+    if _pot_provider():
         extractor_args += ["--extractor-args",
-                           f"youtubepot-bgutilhttp:base_url={POT_PROVIDER}"]
+                           f"youtubepot-bgutilhttp:base_url={_pot_provider()}"]
     log.info("download start: %s (%s)", t.hash[:8], t.name)
     with t.lock:
         t.state = "downloading"
@@ -793,13 +1006,15 @@ def _run_download_locked(t):
         if i:
             time.sleep(DL_DELAY)
         cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
-               *COOKIES_ARG, "-f", afmt, *amerge, "-o", out, "--", t.real_url]
+               *_cookies_arg(), "-f", afmt, *amerge, "-o", out, "--", t.real_url]
         rc, tail = _run_ytdlp(t, cmd, on_line)
         if rc == -1:
             with t.lock:
                 t.state = "error"
                 t.error = f"cannot launch yt-dlp: {' | '.join(tail)}"
             log.warning("download %s: %s", t.hash[:8], t.error)
+            _record_torrent(t)
+            _history_save()
             return
         if rc != 0:
             hint = _cookies_stale_hint(tail)
@@ -839,6 +1054,8 @@ def _run_download_locked(t):
             t.hash[:8], t.error, " | ".join(tail) or "no yt-dlp output",
             (f" | {hint}" if hint else ""),
         )
+        _record_torrent(t)
+        _history_save()
         return
     with t.lock:
         t.progress = 1.0
@@ -850,6 +1067,8 @@ def _run_download_locked(t):
         t.downloaded = t.size
         t.uploaded = t.size
         t.ratio = 1.0
+    _record_torrent(t)
+    _history_save()
     log.info("download complete: %s (%s)", t.hash[:8], found)
 
 
@@ -1001,6 +1220,108 @@ class Handler(BaseHTTPRequestHandler):
                 return v
         return ""
 
+    # -- dashboard UI ----------------------------------------------------
+
+    def _serve_static(self, path):
+        if path in ("/", "/index.html"):
+            rel = "index.html"
+        else:
+            rel = os.path.basename(path[len("/ui/"):]) if path.startswith("/ui/") else ""
+        if not rel:
+            self._text("Not Found", 404)
+            return
+        fp = os.path.join(UI_DIR, rel)
+        try:
+            with open(fp, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            self._text("Not Found", 404)
+            return
+        ext = rel.rsplit(".", 1)[-1].lower() if "." in rel else "html"
+        self._send(body, _UI_MIME.get(ext, "application/octet-stream"))
+
+    def _ui_history(self):
+        recs = []
+        with _history_lock:
+            recs = list(_history.values())
+        # Overlay live registry state so in-progress torrents show fresh
+        # progress/size; the persisted copy is the fallback for deleted items.
+        with _registry_lock:
+            live = {t.hash: _torrent_record(t) for t in _registry.values()}
+        merged = {r["hash"]: r for r in recs}
+        merged.update(live)
+        items = sorted(merged.values(), key=lambda r: r.get("added_on", 0),
+                       reverse=True)
+        self._json({"items": items})
+
+    def _ui_settings_get(self):
+        out = []
+        for key, kind, secret, options, default in UI_SETTINGS:
+            env_set = config.is_env_set(key)
+            file_set = config.file_value(key) is not None
+            if secret:
+                has = bool(config.get(key, default).strip())
+                out.append({
+                    "key": key, "kind": kind, "secret": True, "set": has,
+                    "value": "", "env_set": env_set, "file_set": file_set,
+                    "options": options, "default": default,
+                })
+            else:
+                out.append({
+                    "key": key, "kind": kind, "secret": False, "set": True,
+                    "value": config.get(key, default), "env_set": env_set,
+                    "file_set": file_set, "options": options, "default": default,
+                })
+        cpath = config.get("YT_QBT_COOKIES", "").strip()
+        self._json({
+            "settings": out,
+            "cookies": {
+                "active": bool(cpath),
+                "path": cpath,
+                "env_set": config.is_env_set("YT_QBT_COOKIES"),
+                "file_set": config.file_value("YT_QBT_COOKIES") is not None,
+            },
+        })
+
+    def _ui_settings_post(self, params, json_body):
+        data = json_body if isinstance(json_body, dict) else params
+        settings = data.get("settings")
+        updates = {}
+        if isinstance(settings, dict):
+            for key, raw in settings.items():
+                if key not in _UI_SETTINGS_MAP:
+                    continue
+                key2, kind, secret, options, default = _UI_SETTINGS_MAP[key]
+                val = "" if raw is None else str(raw)
+                if kind == "select" and val and options and val not in options:
+                    self._json({"ok": False,
+                                "error": f"invalid value for {key}: {val}"}, 400)
+                    return
+                if kind == "bool":
+                    val = "1" if val.strip().lower() in ("1", "true", "yes", "on") else "0"
+                updates[key] = val
+        cookies = data.get("cookies")
+        if isinstance(cookies, str) and cookies.strip():
+            cpath = config.get("YT_QBT_COOKIES", "").strip() or COOKIES_FILE_DEFAULT
+            try:
+                os.makedirs(os.path.dirname(cpath) or ".", exist_ok=True)
+                with open(cpath, "w") as fh:
+                    fh.write(cookies)
+            except OSError:
+                self._json({"ok": False, "error": "cannot write cookies file"}, 500)
+                return
+            updates.setdefault("YT_QBT_COOKIES", cpath)
+        if not updates and not (isinstance(cookies, str) and cookies.strip()):
+            self._json({"ok": True})
+            return
+        try:
+            config.set_many(updates)
+        except ValueError as e:
+            self._json({"ok": False, "error": str(e)}, 500)
+            return
+        _apply_log_level()
+        self._json({"ok": True})
+
     # -- routing ---------------------------------------------------------
 
     def do_GET(self):
@@ -1009,27 +1330,53 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._route()
 
-    def _read_form(self):
-        length = int(self.headers.get("Content-Length") or 0)
+    def _read_body(self):
+        """Read the POST body once; return (form, json_obj)."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
         if not length:
-            return {}
+            return {}, None
         raw = self.rfile.read(length)
         try:
-            return urllib.parse.parse_qs(raw.decode("utf-8"))
-        except ValueError:
-            return {}
+            return {}, json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            try:
+                return urllib.parse.parse_qs(raw.decode("utf-8")), None
+            except ValueError:
+                return {}, None
 
     def _route(self):
+        _apply_log_level()
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
-        form = self._read_form() if self.command == "POST" else {}
+        form, json_body = self._read_body() if self.command == "POST" else ({}, None)
         params = {k: (v[0] if v else "") for k, v in {**qs, **form}.items()}
+
+        # Dashboard UI (same port as the downloader).  Static assets stay
+        # public so the page can load and prompt for login; the API endpoints
+        # enforce the same SID auth as /api/v2 when auth is enabled.
+        if path in ("/", "/index.html") or path.startswith("/ui/"):
+            self._serve_static(path)
+            return
+        if path in ("/api/ui/history", "/api/ui/settings"):
+            if _auth_enabled() and not _valid_sid(self._sid()):
+                self._text("Forbidden", 403)
+                return
+            if path == "/api/ui/history":
+                self._ui_history()
+            elif self.command == "POST":
+                self._ui_settings_post(params, json_body)
+            else:
+                self._ui_settings_get()
+            return
 
         if not path.startswith("/api/v2/"):
             self._text("Not Found", 404)
             return
-        if path not in _PUBLIC_PATHS and REQUIRE_AUTH and not _valid_sid(self._sid()):
+        if path not in _PUBLIC_PATHS and _auth_enabled() and not _valid_sid(self._sid()):
             self._text("Forbidden", 403)
             return
 
@@ -1047,7 +1394,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, route, params):
         if route == "auth/login":
-            if params.get("username", "") == USERNAME and params.get("password", "") == PASSWORD:
+            if (params.get("username", "") == _username()
+                    and params.get("password", "") == _password()):
                 sid = _issue_sid()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -1159,14 +1507,18 @@ class Handler(BaseHTTPRequestHandler):
         category = params.get("category", "")
         tags = params.get("tags", "")
         tvdbid = info.get("tvdbid") or ""
+        channel = info.get("channel") or ""
         t = Torrent(hash_, name, save_path, category, tags, real_url, paused,
-                    tvdbid=tvdbid)
+                    tvdbid=tvdbid, channel=channel)
         with _registry_lock:
             _registry[hash_] = t
+        _record_torrent(t)
+        threading.Thread(target=_fill_metadata, args=(t,), daemon=True).start()
         log.info(
-            "torrent added: %s (%s) -> %s%s",
+            "torrent added: %s (%s) -> %s%s%s",
             hash_[:8], name, real_url,
             f" [season tvdbid={tvdbid}]" if tvdbid else "",
+            f" [channel={channel}]" if channel else "",
         )
         if not paused:
             _start_download(t)
@@ -1307,9 +1659,11 @@ def _trackers(t):
 
 
 def main():
+    _history_load()
+    threading.Thread(target=_history_loop, daemon=True).start()
     log.info(
         "qBittorrent spoofer listening on http://%s:%d (auth: %s, yt-dlp: %s)",
-        HOST, PORT, "on" if REQUIRE_AUTH else "off", YTDLP,
+        HOST, PORT, "on" if _auth_enabled() else "off", YTDLP,
     )
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     try:

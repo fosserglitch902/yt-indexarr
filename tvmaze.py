@@ -100,6 +100,20 @@ def show_name_by_tvdbid(tvdbid):
     return data.get("name") if isinstance(data, dict) else None
 
 
+def poster_by_tvdbid(tvdbid):
+    """Series poster/thumbnail image URL for a thetvdb id, or ''.
+
+    TVMaze shows carry a landscape `image.medium` (300x170); prefer it, falling
+    back to the original.  Cached with the same show lookup, so this is cheap
+    for repeat callers.
+    """
+    data = _show_for_tvdbid(tvdbid)
+    if not isinstance(data, dict):
+        return ""
+    img = data.get("image") or {}
+    return img.get("medium") or img.get("original") or ""
+
+
 def _show_for_tvdbid(tvdbid):
     """TVMaze show dict (id+name) for a thetvdb id, cached; or None."""
     key = f"show:{tvdbid}"

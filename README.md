@@ -281,6 +281,31 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_OUTPUT_EXT` | Output container for downloads, `mkv`/`mp4` (default `mkv`). `mkv` holds every codec YouTube serves (incl. av01/vp9 + opus), so the highest-quality stream flows through; `mp4` biases to h264/AAC-paired streams so direct-play stays universal (opaque to browsers/Apple) |
 | `YT_QBT_MAX_PARALLEL` | Maximum concurrent yt-dlp downloads across all torrents (default 2). Extra torrents wait in a Sonarr-visible "Queued" state until a slot frees. Lower values throttle YouTube requests and reduce rate-limit / bot-check failures on rapid sequential episode downloads |
 | `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
+| `YT_QBT_HISTORY_FILE` | Download-history JSON the dashboard reads (default `/data/history.json`) |
+| `YT_QBT_UI_DIR` | Directory holding the dashboard static files (default `./ui` next to `qbt.py`) |
+| `YT_UI_CONFIG_FILE` | Shared settings JSON the dashboard writes (default `/data/config.json`); env vars always win over it |
+
+**Dashboard**
+
+The downloader doubles as a small status UI on its own port (`http://<host>:9177/`),
+no extra service. It shows every download from `YT_QBT_HISTORY_FILE` — completed,
+failed and in-progress, with total size, channel, finish time, and a per-season
+collapse for playlist packs whose episodes each link to their YouTube page —
+plus the poster/thumbnail the indexer fetched (TVMaze poster by TVDB series id,
+falling back to the video's own thumbnail). The frontend is vanilla JS with no
+framework or database, and posters load directly from the browser, so RAM stays
+near-zero.
+
+The **Settings** tab edits a shared config file (`YT_UI_CONFIG_FILE`, default
+`/data/config.json`): TVDB API key, PO provider, output container/codec, log
+levels, indexer/downloader credentials, and a paste box that writes your
+Netscape cookies into `YT_QBT_COOKIES`'s file (default `/data/cookies.txt`).
+Compose env vars **always win** over UI edits — each row shows a "set by compose
+(overrides UI)" badge when an env var is active. Secrets are never echoed back.
+When auth is enabled (`YT_QBT_REQUIRE_AUTH=1`), the UI asks you to sign in with
+the same credentials that Sonarr uses. Settings apply live where possible: log
+levels, auth, API key, codec, container, PO provider and cookies are all read
+lazily, so no restart is needed.
 
 Each item (single video or season episode) is attempted through a small fallback
 ladder: the configured best format, two plain retries (three PO-token attempts

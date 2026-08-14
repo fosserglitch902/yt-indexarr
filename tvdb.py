@@ -24,11 +24,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import config
+
 log = logging.getLogger("yt-tvdb")
 
 TVDB_API = os.environ.get("TVDB_API", "https://api4.thetvdb.com/v4")
-TVDB_API_KEY = os.environ.get("TVDB_API_KEY", "")
-TVDB_PIN = os.environ.get("TVDB_PIN", "")
 TVDB_TIMEOUT = float(os.environ.get("TVDB_TIMEOUT", "5"))
 TOKEN_FILE = os.environ.get(
     "TVDB_TOKEN_FILE",
@@ -60,7 +60,7 @@ LANG_MAP = {
 
 def enabled():
     """True when a TVDB API key is configured (localized titles available)."""
-    return bool((TVDB_API_KEY or "").strip())
+    return bool(config.get("TVDB_API_KEY", "").strip())
 
 
 def _to_tvdb_lang(code):
@@ -149,9 +149,10 @@ def _get_token():
 
 
 def _login():
-    body = {"apikey": TVDB_API_KEY}
-    if (TVDB_PIN or "").strip():
-        body["pin"] = TVDB_PIN.strip()
+    body = {"apikey": config.get("TVDB_API_KEY", "").strip()}
+    pin = config.get("TVDB_PIN", "").strip()
+    if pin:
+        body["pin"] = pin
     req = urllib.request.Request(
         TVDB_API.rstrip("/") + "/login",
         data=json.dumps(body).encode("utf-8"),

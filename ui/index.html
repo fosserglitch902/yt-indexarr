@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yt-indexarr</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<header>
+  <h1>yt-indexarr</h1>
+  <nav>
+    <button id="tab-history" class="tab active" type="button">Downloads</button>
+    <button id="tab-settings" class="tab" type="button">Settings</button>
+  </nav>
+</header>
+<main>
+  <section id="view-history" class="view active"></section>
+  <section id="view-settings" class="view"></section>
+</main>
+
+<div id="login-overlay" hidden>
+  <form id="login-form" autocomplete="on">
+    <h2>Sign in</h2>
+    <label>Username <input name="username" autocomplete="username" required></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Sign in</button>
+    <p id="login-error" class="error"></p>
+  </form>
+</div>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

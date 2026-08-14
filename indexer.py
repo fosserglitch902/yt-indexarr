@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import tvdb
 import tvmaze
+import config
 
 log = logging.getLogger("yt-indexer")
 
@@ -30,13 +31,32 @@ SEARCH_SCRIPT = os.environ.get(
 
 HOST = os.environ.get("YT_INDEXER_HOST", "0.0.0.0")
 PORT = int(os.environ.get("YT_INDEXER_PORT", "9117"))
-API_KEY = os.environ.get("YT_INDEXER_API_KEY", "youtubeindexer")
 # Auth is optional by default; set YT_INDEXER_REQUIRE_KEY=1 (or true/yes/on)
-# to enforce the API key on every request.
-REQUIRE_KEY = (
-    os.environ.get("YT_INDEXER_REQUIRE_KEY", "0").strip().lower()
-    in ("1", "true", "yes", "on")
-)
+# to enforce the API key on every request.  Resolved lazily so the dashboard
+# UI can change key + enforcement without a restart.
+def _api_key():
+    return config.get("YT_INDEXER_API_KEY", "youtubeindexer")
+
+
+def _key_required():
+    return config.get("YT_INDEXER_REQUIRE_KEY", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _apply_log_level():
+    level = config.get("YT_INDEXER_LOG_LEVEL", "INFO")
+    logging.getLogger().setLevel(getattr(logging, level.upper(), logging.INFO))
+
+
+def _search_env():
+    """Env for the search script: inherited env plus UI-file settings that
+    aren't real process env vars (e.g. POT_PROVIDER set via the dashboard)."""
+    env = dict(os.environ)
+    env["POT_PROVIDER"] = config.get("POT_PROVIDER", "").strip()
+    return env
+
+
 INDEXER_NAME = os.environ.get("YT_INDEXER_INDEXER_NAME", "YouTube")
 BASE_URL = os.environ.get("YT_INDEXER_BASE_URL", f"http://localhost:{PORT}")
 
@@ -87,6 +107,7 @@ def _magnet_url(item: dict) -> str:
       dn=<url-encoded release title>    used as the torrent/file name
       x.ytindexer=<base64url(url)>      the real URL the spoof runs yt-dlp on
       x.ytindexertvdbid=<id>            TVDB series id (season packs), optional
+      x.ytindexerchannel=<channel>      YouTube channel, optional
     """
     url = item["url"]
     title = item.get("title") or "yt"
@@ -96,6 +117,9 @@ def _magnet_url(item: dict) -> str:
     magnet = f"magnet:?xt=urn:btih:{btih}&dn={dn}&x.ytindexer={xurl}"
     if item.get("tvdbid"):
         magnet += f"&x.ytindexertvdbid={urllib.parse.quote(str(item['tvdbid']))}"
+    channel = (item.get("channel") or "").strip()
+    if channel:
+        magnet += "&x.ytindexerchannel=" + urllib.parse.quote(channel)
     return magnet
 
 
@@ -196,7 +220,7 @@ def estimate_size(duration: int, resolution: str = "") -> int:
     produce (h264/vp9 files are larger than AV1 for the same quality).
     """
     mbit = _RES_BITRATE.get(str(resolution).split("p", 1)[0], 1.5)
-    mbit *= _CODEC_MULT.get(os.environ.get("YT_CODEC", "auto").strip().lower(), 1.0)
+    mbit *= _CODEC_MULT.get(config.get("YT_CODEC", "auto").strip().lower(), 1.0)
     return int(duration * ((mbit * 1024 * 1024 / 8) + (128 * 1024 / 8)))
 
 
@@ -213,7 +237,7 @@ def run_search(
     ]
     for title in episode_titles or []:
         cmd += ["-t", title]
-    env = dict(os.environ)
+    env = _search_env()
     if expected_duration and expected_duration > 0:
         env["EXPECTED_DURATION"] = str(int(expected_duration))
     log.info("running search: %s", " ".join(cmd))
@@ -441,7 +465,8 @@ def run_season_search(series: str, season: int, tvdbid: str = "") -> list:
         "-j",
     ]
     log.info("running season search: %s", " ".join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180,
+                          env=_search_env())
     if proc.returncode != 0:
         log.error("season search failed: %s", proc.stderr.strip())
         return []
@@ -529,7 +554,8 @@ def run_generic_search(query: str, limit: int = 10) -> list:
         f"ytsearch{limit}:{query}",
     ]
     log.info("running generic search: %s", query)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180,
+                          env=_search_env())
     items = []
     if proc.returncode != 0:
         log.error("generic search failed: %s", proc.stderr.strip())
@@ -577,13 +603,14 @@ class Handler(BaseHTTPRequestHandler):
             log.warning("socket error during response write")
 
     def do_GET(self):
+        _apply_log_level()
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
         flat = {k: (v[0] if v else "") for k, v in params.items()}
         self_url = f"{BASE_URL}{self.path}"
 
         key = flat.get("apikey") or flat.get("key")
-        if REQUIRE_KEY and (not key or key != API_KEY):
+        if _key_required() and (not key or key != _api_key()):
             # Return an empty feed rather than <error> (codes 100-199 read as
             # ApiKeyException in Sonarr) so auth failures don't surface as a
             # confusing "API key invalid" against this indexer.
@@ -623,7 +650,7 @@ def main():
         log.error("search script not found: %s", SEARCH_SCRIPT)
         sys.exit(1)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    auth = "on" if REQUIRE_KEY else "off"
+    auth = "on" if _key_required() else "off"
     log.info(
         "Torznab indexer listening on http://%s:%d (api key required: %s)",
         HOST, PORT, auth,
