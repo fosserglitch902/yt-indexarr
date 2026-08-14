@@ -343,6 +343,15 @@ search), `qbt.py` switches to season mode: it enumerates the playlist with
 file per episode as `<Series> S0<N>E0<M>.mkv` (or `.mp4` with
 `YT_QBT_OUTPUT_EXT=mp4`) in the torrent's download folder.
 
+Season results report a **quality** in the Torznab feed: the search script
+resolves the first video of the top `RESOLVE_TOP` playlists (a season
+playlist's first entry is episode 1, so its quality represents the pack) and
+tags each release `2160p`/`1440p`/`1080p`/`720p`/`480p`/`360p` — the same
+`resolution` attribute single-episode results carry. Releases whose playlist
+couldn't be probed report no resolution. The reported resolution also scales
+the season-pack size estimate; if it's unknown the estimate keeps the 1080p
+baseline.
+
 Episode mapping prefers explicit `S03E24`-style tokens in the video title,
 then season episode metadata (titles + per-episode runtimes) from **TheTVDB**
 when `tvdbid` is present in the magnet and `TVDB_API_KEY` is configured,

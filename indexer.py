@@ -488,11 +488,17 @@ def run_season_search(series: str, season: int, tvdbid: str = "") -> list:
             continue
         title = data.get("title", "")
         count = int(data.get("playlist_count", 0) or 0)
+        # Quality of the pack = resolution of its first video (probed by the
+        # script); unknown playlists fall back to the 1080 baseline.
+        res = data.get("resolution") or ""
+        res_or = res or "1080"
         if season_sec:
-            size = estimate_size(season_sec, "1080")
+            size = estimate_size(season_sec, res_or)
         else:
-            size = estimate_size(1500, "1080") * count
+            size = estimate_size(1500, res_or) * count
         base = f"{series} S{season:02d} WEB"
+        if res:
+            base = f"{base} {res}"
         display = f"{base} - {title}" if title and title != base else base
         items.append(
             {
@@ -504,7 +510,7 @@ def run_season_search(series: str, season: int, tvdbid: str = "") -> list:
                 "views": 0,
                 "size": size,
                 "description": title,
-                "resolution": "",
+                "resolution": res,
                 "language": "",
                 "source": "web",
                 "pub_date": _now_rfc2822(),

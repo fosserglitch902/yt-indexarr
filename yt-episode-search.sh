@@ -268,6 +268,32 @@ JQ
     | .[:$MAX][]
   ' "$P_WORK/raw.jsonl" > "$P_WORK/final.jsonl"
 
+  # Optional quality pass: resolve the first video of each top playlist to
+  # recover its resolution (flat search results never carry it; a full
+  # --dump-json with --playlist-items 1 adds it in ~1-2s per playlist).  A
+  # season playlist's first entry is episode 1, so its quality represents the
+  # pack.  Set RESOLVE_TOP=0 to skip.
+  P_RESOLVED="$P_WORK/resolved.jsonl"
+  if [[ "$RESOLVE_TOP" -gt 0 ]] && command -v xargs >/dev/null 2>&1; then
+    head -n "$RESOLVE_TOP" "$P_WORK/final.jsonl" | jq -r '.url // empty' |
+      xargs -P 4 -I{} sh -c \
+        'yt-dlp --ignore-config --dump-json --no-warnings --skip-download --retries 3 --playlist-items 1 --extractor-args "youtube:player_client=$PLAYER_CLIENT" $(if [ -n "$POT_PROVIDER" ]; then printf -- "--extractor-args youtubepot-bgutilhttp:base_url=$POT_PROVIDER"; fi) "$1" 2>/dev/null | jq -c --arg url "$1" '"'"'{url: $url, height: (.height // 0)}'"'"' ' _ {} \
+        > "$P_RESOLVED" 2>/dev/null || true
+    jq -c -s --slurpfile meta "$P_RESOLVED" '
+      def qlabel($h):
+        if $h >= 2160 then "2160p"
+        elif $h >= 1440 then "1440p"
+        elif $h >= 1080 then "1080p"
+        elif $h >= 720 then "720p"
+        elif $h >= 480 then "480p"
+        else "360p" end;
+      ($meta | map({key: .url, value: .}) | from_entries) as $m |
+      .[] |
+      . + { resolution: ((if ($m[.url].height // 0) > 0 then qlabel($m[.url].height) else null end)) }
+    ' "$P_WORK/final.jsonl" > "$P_WORK/final2.jsonl"
+    mv "$P_WORK/final2.jsonl" "$P_WORK/final.jsonl"
+  fi
+
   if $JSON_OUT; then
     cat "$P_WORK/final.jsonl"
   else
