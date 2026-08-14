@@ -57,7 +57,10 @@ PLAYER_CLIENT = os.environ.get(
 # Optional PO token provider (e.g. http://pot:4416 from the bgutil
 # bgutil-ytdlp-pot-provider container). Empty disables the feature. Requires
 # the bgutil-ytdlp-pot-provider plugin + a JS runtime (deno/node) installed.
-POT_PROVIDER = os.environ.get("YT_QBT_POT_PROVIDER", "").strip()
+# POT_PROVIDER is shared with the search script (one value, one name).  The
+# old YT_QBT_POT_PROVIDER name still works but is deprecated.
+POT_PROVIDER = (os.environ.get("POT_PROVIDER", "").strip()
+                or os.environ.get("YT_QBT_POT_PROVIDER", "").strip())
 DL_DIR = os.environ.get("YT_QBT_DL_DIR", os.path.expanduser("~/downloads"))
 # +/- seconds around an episode's reported runtime when checking whether a
 # playlist video is the real episode (vs a compilation/extras).  Matches the
@@ -98,6 +101,12 @@ logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+
+if os.environ.get("YT_QBT_POT_PROVIDER", "").strip():
+    log.warning(
+        "YT_QBT_POT_PROVIDER is deprecated and will be removed; "
+        "set POT_PROVIDER instead"
+    )
 
 _DL_SEM = threading.BoundedSemaphore(MAX_PARALLEL)
 

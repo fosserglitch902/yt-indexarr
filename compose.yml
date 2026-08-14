@@ -24,7 +24,7 @@ services:
       # - RESOLVE_TOP=5
       # - SEARCH_PARALLEL=3
       # - PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
-      - POT_PROVIDER=http://pot:4416
+      - POT_PROVIDER=http://pot:4416   # shared: search script + downloader
       # --- download spoofer (qbt.py) ---
       - YT_QBT_HOST=0.0.0.0
       - YT_QBT_PORT=9177
@@ -36,7 +36,6 @@ services:
       # - YT_QBT_OUTPUT_EXT=mkv|mp4    # output container (default mkv)
       # - YT_QBT_YTDLP=yt-dlp
       # - YT_QBT_PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
-      - YT_QBT_POT_PROVIDER=http://pot:4416
       # - YT_QBT_COOKIES=/data/cookies.txt   # Netscape-format browser cookies for yt-dlp (reduces 403/SABR failures)
       # - YT_QBT_MAX_PARALLEL=2   # max concurrent downloads across torrents (default 2)
       # - YT_QBT_LOG_LEVEL=INFO
@@ -56,7 +55,7 @@ services:
 
   # GVS PO token provider for SABR-restricted videos (see README). Bundled
   # deno/yt-dlp-ejs make this the default so high-res formats are unlocked.
-  # Disable by removing it and clearing YT_QBT_POT_PROVIDER/POT_PROVIDER above.
+  # Disable by removing it and clearing the POT_PROVIDER var above.
   pot:
     image: brainicism/bgutil-ytdlp-pot-provider
     container_name: bgutil-provider

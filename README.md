@@ -273,7 +273,7 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_REQUIRE_AUTH` | Enforce login: `1`/`0` (default `0` — auth off, like the indexer) |
 | `YT_QBT_YTDLP` | `yt-dlp` binary (default `yt-dlp`) |
 | `YT_QBT_PLAYER_CLIENT` | yt-dlp YouTube player client(s) for downloads, comma-separated fallback chain (default `tv_embedded,android_vr,web,tv_simply,android`) |
-| `YT_QBT_POT_PROVIDER` | Optional GVS PO token provider base URL for downloads (e.g. `http://127.0.0.1:4416`); empty (default) disables. Appended as `--extractor-args youtubepot-bgutilhttp:base_url=`. See SABR note below. |
+| `POT_PROVIDER` | Optional GVS PO token provider base URL (e.g. `http://127.0.0.1:4416`); shared by the **search script and the downloader** — one value, one name. Passed to yt-dlp as `--extractor-args youtubepot-bgutilhttp:base_url=`. Empty (default) disables. Needed to unlock high-res formats on SABR-forced videos (see below). Requires the provider plugin + a Deno 2.3+ runtime with the `yt-dlp-ejs` scripts installed on the host running the probe. The downloader also accepts the legacy `YT_QBT_POT_PROVIDER` name (deprecated) |
 | `YT_QBT_COOKIES` | Optional Netscape-format browser cookies file, passed to yt-dlp as `--cookies`. Logged-in cookies make downloads look far more legitimate and are the most reliable way to reduce YouTube 403 / SABR-restriction failures (see SABR note). Empty (default) disables |
 | `YT_QBT_DL_DIR` | Save path when the client sends none (default `~/downloads`) |
 | `YT_QBT_EP_DURATION_BUFFER` | ± seconds around a mapped episode's runtime when checking whether a playlist video is that episode (default 60; mirrors the search script's `EP_DURATION_BUFFER`) |
@@ -350,8 +350,8 @@ default (it is also what makes the bundled deno/yt-dlp-ejs useful):
 docker run -d --name bgutil-provider --init -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider
 ```
 
-Then set `YT_QBT_POT_PROVIDER=http://127.0.0.1:4416` (qbt.py) and
-`POT_PROVIDER=http://127.0.0.1:4416` (search script). The host also needs the
+Then set `POT_PROVIDER=http://127.0.0.1:4416` — one variable is read by both
+the downloader and the search script. The host also needs the
 `bgutil-ytdlp-pot-provider` yt-dlp plugin and a **Deno 2.3+** runtime with the
 `yt-dlp-ejs` challenge scripts installed (deno is yt-dlp's preferred runtime;
 node must be v22+). With both, `tv_simply` downloads the example SABR video
@@ -405,7 +405,7 @@ orchestrator can restart it.
 The image ships the `yt-dlp-ejs` challenge scripts, the
 `bgutil-ytdlp-pot-provider` plugin, and the Deno JS runtime, so the PO-token
 path works out of the box — no host-side installs. It is inert unless
-`YT_QBT_POT_PROVIDER`/`POT_PROVIDER` point at a running provider.
+`POT_PROVIDER` points at a running provider.
 
 ```sh
 docker run -d \
@@ -441,12 +441,11 @@ services:
       - YT_QBT_PASSWORD=change-me
       - YT_QBT_REQUIRE_AUTH=0
       - YT_QBT_DL_DIR=/data/downloads
-      - YT_QBT_POT_PROVIDER=http://pot:4416
       - POT_PROVIDER=http://pot:4416
       # - TVDB_API_KEY=your-thetvdb-key   # localized episode titles
       # - TVDB_PIN=your-pin               # only for user-supported keys
   # GVS PO token provider for SABR-restricted videos (see above). Disable by
-  # removing it and clearing the two POT_PROVIDER vars above.
+  # removing it and clearing the POT_PROVIDER var above.
   pot:
     image: brainicism/bgutil-ytdlp-pot-provider
     container_name: bgutil-provider
