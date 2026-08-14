@@ -37,6 +37,7 @@ services:
       # - YT_QBT_YTDLP=yt-dlp
       # - YT_QBT_PLAYER_CLIENT=tv_embedded,android_vr,web,tv_simply,android
       - YT_QBT_POT_PROVIDER=http://pot:4416
+      # - YT_QBT_COOKIES=/data/cookies.txt   # Netscape-format browser cookies for yt-dlp (reduces 403/SABR failures)
       # - YT_QBT_MAX_PARALLEL=2   # max concurrent downloads across torrents (default 2)
       # - YT_QBT_LOG_LEVEL=INFO
       # --- episode-title lookup: TVMaze ---

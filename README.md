@@ -274,6 +274,7 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_YTDLP` | `yt-dlp` binary (default `yt-dlp`) |
 | `YT_QBT_PLAYER_CLIENT` | yt-dlp YouTube player client(s) for downloads, comma-separated fallback chain (default `tv_embedded,android_vr,web,tv_simply,android`) |
 | `YT_QBT_POT_PROVIDER` | Optional GVS PO token provider base URL for downloads (e.g. `http://127.0.0.1:4416`); empty (default) disables. Appended as `--extractor-args youtubepot-bgutilhttp:base_url=`. See SABR note below. |
+| `YT_QBT_COOKIES` | Optional Netscape-format browser cookies file, passed to yt-dlp as `--cookies`. Logged-in cookies make downloads look far more legitimate and are the most reliable way to reduce YouTube 403 / SABR-restriction failures (see SABR note). Empty (default) disables |
 | `YT_QBT_DL_DIR` | Save path when the client sends none (default `~/downloads`) |
 | `YT_QBT_EP_DURATION_BUFFER` | ± seconds around a mapped episode's runtime when checking whether a playlist video is that episode (default 60; mirrors the search script's `EP_DURATION_BUFFER`) |
 | `YT_CODEC` | Video codec for downloads, `auto`/`av1`/`vp9`/`h264` (default `auto`). Falls back to best format when the codec is unavailable. See the codec notes in the indexer section. Shared with the indexer's size estimate |
@@ -354,6 +355,21 @@ node must be v22+). With both, `tv_simply` downloads the example SABR video
 `zIoxr8k3rh0` at 1920x1080 instead of 360p. The provider stays optional — unset
 the env vars (or drop the `pot` service) and behavior is unchanged, with such
 videos downloading at 360p.
+
+Even with a PO token, YouTube can still return **HTTP 403 on the stream fetch**
+for SABR-restricted videos (the token makes the high-res format *list*, but the
+server may still refuse the fetch depending on session/IP reputation — this is
+why SABR failures look "random" episode-to-episode). The download spoofer
+already retries each item best → retry → `b[ext=mp4]/b` so such episodes still
+complete at 360p. To recover full quality reliably, provide browsers cookies via
+`YT_QBT_COOKIES` (see the env table) — logged-in, non-bot-looking traffic is far
+less likely to be 403/SABR-flagged. Export them on a machine with your browser
+open (a "Export Cookies" extension, or Chrome's `--dump-cookies`), then copy the
+resulting Netscape-format `cookies.txt` to the path you set for `YT_QBT_COOKIES`
+(e.g. `/data/cookies.txt`, mounted via the compose volume). While logged in,
+`yt-dlp --cookies-from-browser firefox --skip-download -O "%(id)s" <url>` on a
+dev box is a quick way to verify a browser's cookies bypass the 403 before you
+deploy them.
 
 **Endpoint coverage**: `auth/login|logout`, `app/version|webapiVersion|buildInfo|preferences|shutdown`, `torrents/info|add|delete|pause|resume|recheck|reannounce|setShareLimits|topPrio|setCategory|properties|files|trackers|peers|categories|tags|createCategory|deleteCategory`, `sync/maindata`, `log/main`. Categories are kept in memory (`torrents/categories`), so Sonarr's category check/create passes. `/api/v2/app/preferences` reports `dht: true` and `queueing_enabled: true`, which Sonarr requires before it will accept a trackerless magnet and non-default priorities.
 

@@ -80,6 +80,12 @@ if OUTPUT_EXT not in ("mkv", "mp4"):
 # Sonarr-visible "Queued" state.  Lower values throttle YouTube requests to
 # reduce rate-limit / bot-check failures on rapid sequential downloads.
 MAX_PARALLEL = max(1, int(os.environ.get("YT_QBT_MAX_PARALLEL", "2")))
+# Optional browser cookies file (Netscape format) passed to yt-dlp as
+# --cookies.  Logged-in cookies make downloads look far more legitimate and are
+# the most reliable way to reduce YouTube 403/SABR-restriction failures.  Empty
+# (default) disables the flag.
+COOKIES = os.environ.get("YT_QBT_COOKIES", "").strip()
+COOKIES_ARG = ([f"--cookies", COOKIES] if COOKIES else [])
 LOG_LEVEL = os.environ.get("YT_QBT_LOG_LEVEL", "INFO")
 
 log = logging.getLogger("yt-qbt")
@@ -599,7 +605,7 @@ def _run_season_download(t):
 
         for label, afmt, amerge in _fallback_attempts(fmt, merge):
             cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
-                   "-f", afmt, *amerge, "-o", out, "--", url]
+                   *COOKIES_ARG, "-f", afmt, *amerge, "-o", out, "--", url]
             rc, tail = _run_ytdlp(t, cmd, on_line)
             if rc == -1:
                 log.warning("cannot launch yt-dlp for %s: %s",
@@ -727,7 +733,7 @@ def _run_download_locked(t):
     found = None
     for label, afmt, amerge in _fallback_attempts(fmt, merge):
         cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
-               "-f", afmt, *amerge, "-o", out, "--", t.real_url]
+               *COOKIES_ARG, "-f", afmt, *amerge, "-o", out, "--", t.real_url]
         rc, tail = _run_ytdlp(t, cmd, on_line)
         if rc == -1:
             with t.lock:
