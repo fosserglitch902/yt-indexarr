@@ -281,6 +281,12 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_MAX_PARALLEL` | Maximum concurrent yt-dlp downloads across all torrents (default 2). Extra torrents wait in a Sonarr-visible "Queued" state until a slot frees. Lower values throttle YouTube requests and reduce rate-limit / bot-check failures on rapid sequential episode downloads |
 | `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
 
+Each item (single video or season episode) is attempted through a small fallback
+ladder: the configured best format, a plain retry, then `b[ext=mp4]/b`. This
+handles SABR-only videos (see the SABR note) that list their highest format once
+a PO token is presented but still refuse the stream fetch with HTTP 403 — the
+final rung keeps such episodes at a working 360p instead of failing them.
+
 Without `ffmpeg`, downloads use a single-file best format preferring `mp4`
 (`b[ext=mp4]/b`) and the container cannot be changed, so `YT_QBT_OUTPUT_EXT`
 only takes effect when ffmpeg is installed, where the merge step remuxes into

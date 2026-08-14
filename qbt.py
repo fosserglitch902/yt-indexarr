@@ -464,6 +464,67 @@ def _format_spec(codec, have_ffmpeg):
             f"bestvideo+bestaudio/b[ext=mp4]/b", merge)
 
 
+def _is_fragment(name):
+    """True for yt-dlp merge intermediates ('x.f401.mp4', 'x.f251.m4a'),
+    partial files ('.part') and sidecar info files ('.ytdl'), which must never
+    be treated as a finished episode file."""
+    base = os.path.basename(name)
+    if base.endswith((".part", ".ytdl")):
+        return True
+    return bool(re.search(r"\.f\d+\.", base))
+
+
+def _fallback_attempts(fmt, merge):
+    """(label, fmt, merge) ladder for one download item, best quality first.
+
+    SABR-only videos (yt-dlp#12482) can list high-res formats once a PO token
+    is presented yet still refuse the stream fetch with HTTP 403, so a plain
+    retry (fresh PO token) and a guaranteed combined-stream fallback are tried
+    before the item is given up on.  SABR-restricted videos expose their 360p
+    combined mp4 to every client, so the final rung always resolves.
+    """
+    return [
+        ("best", fmt, merge),
+        ("retry", fmt, merge),
+        ("safe", "b[ext=mp4]/b", ()),
+    ]
+
+
+def _run_ytdlp(t, cmd, on_line):
+    """Run one yt-dlp invocation, wiring t.proc/t.state and streaming stdout.
+
+    on_line(line, m) is called for every line where m is the pct match (None
+    when the line is not progress output).  Returns (rc, tail) where tail is a
+    deque of the last non-progress lines (the real failure reason).
+    """
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as e:
+        return -1, collections.deque([f"cannot launch yt-dlp: {e}"])
+    with t.lock:
+        t.proc = proc
+        t.state = "downloading"
+    pct = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
+    tail = collections.deque(maxlen=10)
+    for line in proc.stdout:
+        m = pct.search(line)
+        if on_line:
+            on_line(line, m)
+        if not m:
+            s = line.strip()
+            if s:
+                tail.append(s)
+    rc = proc.wait()
+    return rc, tail
+
+
 def _run_season_download(t):
     """Download a whole season playlist, one file per episode."""
     dl_dir = _download_dir(t)
@@ -511,63 +572,56 @@ def _run_season_download(t):
     for ep, url, vtitle in plan:
         ep_tag = f"S{season:02d}E{ep:02d}"
         out = os.path.join(dl_dir, f"{series} {ep_tag}.%(ext)s")
-        cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
-               "-f", fmt, *merge, "-o", out, "--", url]
         log.info(
             "season item start %s/%s: %s (%s)",
             done + 1, total, ep_tag, vtitle,
         )
         item_started = time.time()
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except OSError as e:
-            log.warning("cannot launch yt-dlp for %s: %s", ep_tag, e)
-            done += 1
-            continue
-        with t.lock:
-            t.proc = proc
-            t.state = "downloading"
-        pct = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
-        # Rolling tail of yt-dlp's non-progress output so the real failure
-        # reason (bot-check, 429, unavailable, PO error) surfaces in the log.
-        tail = collections.deque(maxlen=10)
         ep_size = 0
-        for line in proc.stdout:
-            m = pct.search(line)
-            if m:
-                slot = float(m.group(1)) / 100.0
-                if not ep_size:
-                    ep_size = _parse_total_size(line) or 0
-                with t.lock:
-                    t.progress = min(0.999, (done + slot) / total)
-                    if ep_size:
-                        # Rough whole-season estimate: completed episodes get
-                        # their real size; the rest are guessed at this
-                        # episode's size so the Sonarr bar moves smoothly.
-                        est = int(ep_size * (done + slot))
-                        t.size = est
-                        t.downloaded = int(est * t.progress)
-            else:
-                s = line.strip()
-                if s:
-                    tail.append(s)
-        rc = proc.wait()
-        if rc != 0:
-            log.warning(
-                "season item %s failed (rc=%s): %s",
-                ep_tag, rc, " | ".join(tail) or "no yt-dlp output",
+        fp = None
+
+        def on_line(line, m):
+            nonlocal ep_size
+            if not m:
+                return
+            slot = float(m.group(1)) / 100.0
+            if not ep_size:
+                ep_size = _parse_total_size(line) or 0
+            with t.lock:
+                t.progress = min(0.999, (done + slot) / total)
+                if ep_size:
+                    # Rough whole-season estimate: completed episodes get
+                    # their real size; the rest are guessed at this episode's
+                    # size so the Sonarr bar moves smoothly.
+                    est = int(ep_size * (done + slot))
+                    t.size = est
+                    t.downloaded = int(est * t.progress)
+
+        for label, afmt, amerge in _fallback_attempts(fmt, merge):
+            cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
+                   "-f", afmt, *amerge, "-o", out, "--", url]
+            rc, tail = _run_ytdlp(t, cmd, on_line)
+            if rc == -1:
+                log.warning("cannot launch yt-dlp for %s: %s",
+                            ep_tag, " | ".join(tail))
+                break
+            if rc != 0:
+                log.warning(
+                    "season item %s (%s) failed (rc=%s): %s",
+                    ep_tag, label, rc, " | ".join(tail) or "no yt-dlp output",
+                )
+                continue
+            found = sorted(
+                fp_ for fp_ in glob.glob(
+                    os.path.join(dl_dir, f"{series} {ep_tag}.*")
+                ) if not _is_fragment(fp_)
             )
-            done += 1
-            continue
-        found = sorted(glob.glob(os.path.join(dl_dir, f"{series} {ep_tag}.*")))
-        if found:
+            if not found:
+                log.warning(
+                    "season item %s (%s): rc=0 but no output file found (%s)",
+                    ep_tag, label, " | ".join(tail) or "no yt-dlp output",
+                )
+                continue
             fp = found[0]
             completed_files.append(fp)
             size = os.path.getsize(fp)
@@ -577,11 +631,7 @@ def _run_season_download(t):
                 done + 1, total, ep_tag, os.path.basename(fp),
                 size / (1024 * 1024), int(time.time() - item_started),
             )
-        else:
-            log.warning(
-                "season item %s: rc=0 but no output file found (%s)",
-                ep_tag, " | ".join(tail) or "no yt-dlp output",
-            )
+            break
         done += 1
         with t.lock:
             t.progress = (done / total) if done < total else 1.0
@@ -655,80 +705,61 @@ def _run_download_locked(t):
     if POT_PROVIDER:
         extractor_args += ["--extractor-args",
                            f"youtubepot-bgutilhttp:base_url={POT_PROVIDER}"]
-    cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
-           "-f", fmt, *merge, "-o", out, "--", t.real_url]
     log.info("download start: %s (%s)", t.hash[:8], t.name)
     with t.lock:
         t.state = "downloading"
         t._started = True
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except OSError as e:
+
+    def on_line(line, m):
+        if not m:
+            return
         with t.lock:
-            t.state = "error"
-            t.error = f"cannot launch yt-dlp: {e}"
-        return
-    with t.lock:
-        t.proc = proc
-    pct = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
-    # Rolling tail of yt-dlp's non-progress output so the real failure reason
-    # (bot-check, 429, unavailable, PO error) surfaces in the log.
-    tail = collections.deque(maxlen=10)
-    for line in proc.stdout:
-        m = pct.search(line)
-        if m:
+            slot = float(m.group(1)) / 100.0
+            t.progress = min(0.999, slot)
+            total = _parse_total_size(line)
+            if total and t.size == 0:
+                t.size = total
+            if t.size:
+                # scale downloaded/amount_left live so Sonarr's activity
+                # bar animates; exactness isn't important, closeness is.
+                t.downloaded = int(t.size * t.progress)
+
+    found = None
+    for label, afmt, amerge in _fallback_attempts(fmt, merge):
+        cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
+               "-f", afmt, *amerge, "-o", out, "--", t.real_url]
+        rc, tail = _run_ytdlp(t, cmd, on_line)
+        if rc == -1:
             with t.lock:
-                slot = float(m.group(1)) / 100.0
-                t.progress = min(0.999, slot)
-                total = _parse_total_size(line)
-                if total and t.size == 0:
-                    t.size = total
-                if t.size:
-                    # scale downloaded/amount_left live so Sonarr's activity
-                    # bar animates; exactness isn't important, closeness is.
-                    t.downloaded = int(t.size * t.progress)
-        else:
-            s = line.strip()
-            if s:
-                tail.append(s)
-    rc = proc.wait()
-    if rc == 0:
+                t.state = "error"
+                t.error = f"cannot launch yt-dlp: {' | '.join(tail)}"
+            log.warning("download %s: %s", t.hash[:8], t.error)
+            return
+        if rc != 0:
+            log.warning(
+                "download %s (%s) failed (rc=%s): %s",
+                t.hash[:8], label, rc, " | ".join(tail) or "no yt-dlp output",
+            )
+            continue
         found = None
         try:
             for fn in os.listdir(dl_dir):
                 fp = os.path.join(dl_dir, fn)
                 if os.path.isfile(fp) and fn.lower().endswith(
                     (".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".flv", ".mov")
-                ):
+                ) and not _is_fragment(fp):
                     found = fp
                     break
         except OSError:
             pass
-        with t.lock:
-            t.progress = 1.0
-            t.state = "uploading"
-            t.completion_on = int(time.time())
-            t.last_activity = t.completion_on
-            if found:
-                t.file_path = found
-                t.size = os.path.getsize(found)
-                t.downloaded = t.size
-                t.uploaded = t.size
-                t.ratio = 1.0
-        log.info("download complete: %s (%s)", t.hash[:8], found or t.name)
         if not found:
             log.warning(
-                "download %s: rc=0 but no output file found (%s)",
-                t.hash[:8], " | ".join(tail) or "no yt-dlp output",
+                "download %s (%s): rc=0 but no output file found (%s)",
+                t.hash[:8], label, " | ".join(tail) or "no yt-dlp output",
             )
-    else:
+            continue
+        break
+    if not found:
         with t.lock:
             t.state = "error"
             t.error = f"yt-dlp exited with code {rc}"
@@ -736,6 +767,18 @@ def _run_download_locked(t):
             "download failed: %s (%s): %s",
             t.hash[:8], t.error, " | ".join(tail) or "no yt-dlp output",
         )
+        return
+    with t.lock:
+        t.progress = 1.0
+        t.state = "uploading"
+        t.completion_on = int(time.time())
+        t.last_activity = t.completion_on
+        t.file_path = found
+        t.size = os.path.getsize(found)
+        t.downloaded = t.size
+        t.uploaded = t.size
+        t.ratio = 1.0
+    log.info("download complete: %s (%s)", t.hash[:8], found)
 
 
 def _start_download(t):
