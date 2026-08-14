@@ -266,9 +266,8 @@ def run_search(
             continue
         raw_title = data.get("title", "")
         title = data.get("normalized_title") or raw_title
-        display_title = (
-            f"{title} - {raw_title}" if raw_title and raw_title != title else title
-        )
+        channel = (data.get("channel") or "").strip()
+        display_title = f"{title} - {channel}" if channel else title
         items.append(
             {
                 "title": title,
@@ -488,10 +487,13 @@ def run_season_search(series: str, season: int, tvdbid: str = "") -> list:
             continue
         title = data.get("title", "")
         count = int(data.get("playlist_count", 0) or 0)
-        # Quality of the pack = resolution of its first video (probed by the
-        # script); unknown playlists fall back to the 1080 baseline.
+        channel = (data.get("channel") or "").strip()
+        # Quality + popularity of the pack = its first video's (probed by the
+        # script; playlists carry no view count of their own).  Unknown
+        # playlists fall back to the 1080 baseline for the size estimate.
         res = data.get("resolution") or ""
         res_or = res or "1080"
+        views = int(data.get("views") or 0)
         if season_sec:
             size = estimate_size(season_sec, res_or)
         else:
@@ -499,7 +501,11 @@ def run_season_search(series: str, season: int, tvdbid: str = "") -> list:
         base = f"{series} S{season:02d} WEB"
         if res:
             base = f"{base} {res}"
-        display = f"{base} - {title}" if title and title != base else base
+        display = base
+        if channel:
+            display = f"{display} - {channel}"
+        if count:
+            display = f"{display} x{count}"
         items.append(
             {
                 "title": base,
@@ -507,7 +513,7 @@ def run_season_search(series: str, season: int, tvdbid: str = "") -> list:
                 "guid": f"ytpl-{pid}",
                 "url": data.get("url")
                 or f"https://www.youtube.com/playlist?list={pid}",
-                "views": 0,
+                "views": views,
                 "size": size,
                 "description": title,
                 "resolution": res,
