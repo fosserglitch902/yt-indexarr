@@ -375,6 +375,18 @@ resulting Netscape-format `cookies.txt` to the path you set for `YT_QBT_COOKIES`
 dev box is a quick way to verify a browser's cookies bypass the 403 before you
 deploy them.
 
+**When to refresh cookies.** An exported `cookies.txt` is a live session with
+no fixed expiry — YouTube invalidates it faster when it sees heavy traffic from
+a datacenter IP (as on a server). As a baseline, re-export **roughly weekly**,
+and treat the trigger as the symptom: when episode logs start showing
+`HTTP Error 403` / `unable to download video data` on a previously-working
+account, re-export (qbt.py logs a one-time "cookies may be stale" hint on the
+first such failure). To make a file last months instead: export from an
+incognito/throwaway browser profile you never browse in again — YouTube stops
+rotating a session that isn't used, so it isn't invalidated either (prefer
+Firefox; Chromium has a cookie-database lock that can make the file lag).
+Re-export early after a sign-out or password change.
+
 **Endpoint coverage**: `auth/login|logout`, `app/version|webapiVersion|buildInfo|preferences|shutdown`, `torrents/info|add|delete|pause|resume|recheck|reannounce|setShareLimits|topPrio|setCategory|properties|files|trackers|peers|categories|tags|createCategory|deleteCategory`, `sync/maindata`, `log/main`. Categories are kept in memory (`torrents/categories`), so Sonarr's category check/create passes. `/api/v2/app/preferences` reports `dht: true` and `queueing_enabled: true`, which Sonarr requires before it will accept a trackerless magnet and non-default priorities.
 
 ## Docker

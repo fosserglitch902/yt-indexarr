@@ -101,6 +101,9 @@ logging.basicConfig(
 
 _DL_SEM = threading.BoundedSemaphore(MAX_PARALLEL)
 
+if COOKIES:
+    log.info("using yt-dlp cookies from %s", COOKIES)
+
 _PUBLIC_PATHS = {
     "/api/v2/auth/login",
     "/api/v2/app/version",
@@ -501,6 +504,33 @@ def _fallback_attempts(fmt, merge):
     return ladder
 
 
+_COOKIE_HINTS_ISSUED = set()
+
+
+def _cookies_stale_hint(tail):
+    """Once-per-run actionable hint when a failure tail suggests cookies.
+
+    yt-dlp prints characteristic markers when a session is rejected; when one
+    appears the operator should re-export cookies.txt (or, with no cookies
+    configured, consider exporting some).  The hint fires at most once per run
+    per kind so a whole failing season doesn't spam the logs.
+    """
+    blob = " | ".join(tail) if tail else ""
+    if not re.search(r"HTTP Error 403|unable to download video data|"
+                     r"Sign in to confirm|Sign in with Google", blob,
+                     re.IGNORECASE):
+        return ""
+    key = "stale" if COOKIES else "none"
+    if key in _COOKIE_HINTS_ISSUED:
+        return ""
+    _COOKIE_HINTS_ISSUED.add(key)
+    if COOKIES:
+        return ("cookies may be stale - re-export cookies.txt; "
+                "if 403s persist the video is likely still SABR-restricted")
+    return ("403 detected - consider setting YT_QBT_COOKIES "
+            "(see README SABR note)")
+
+
 def _run_ytdlp(t, cmd, on_line):
     """Run one yt-dlp invocation, wiring t.proc/t.state and streaming stdout.
 
@@ -624,9 +654,11 @@ def _run_season_download(t):
                             ep_tag, " | ".join(tail))
                 break
             if rc != 0:
+                hint = _cookies_stale_hint(tail)
                 log.warning(
-                    "season item %s (%s) failed (rc=%s): %s",
+                    "season item %s (%s) failed (rc=%s): %s%s",
                     ep_tag, label, rc, " | ".join(tail) or "no yt-dlp output",
+                    (f" | {hint}" if hint else ""),
                 )
                 continue
             found = sorted(
@@ -635,9 +667,11 @@ def _run_season_download(t):
                 ) if not _is_fragment(fp_)
             )
             if not found:
+                hint = _cookies_stale_hint(tail)
                 log.warning(
-                    "season item %s (%s): rc=0 but no output file found (%s)",
+                    "season item %s (%s): rc=0 but no output file found (%s)%s",
                     ep_tag, label, " | ".join(tail) or "no yt-dlp output",
+                    (f" | {hint}" if hint else ""),
                 )
                 continue
             fp = found[0]
@@ -759,9 +793,11 @@ def _run_download_locked(t):
             log.warning("download %s: %s", t.hash[:8], t.error)
             return
         if rc != 0:
+            hint = _cookies_stale_hint(tail)
             log.warning(
-                "download %s (%s) failed (rc=%s): %s",
+                "download %s (%s) failed (rc=%s): %s%s",
                 t.hash[:8], label, rc, " | ".join(tail) or "no yt-dlp output",
+                (f" | {hint}" if hint else ""),
             )
             continue
         found = None
@@ -776,19 +812,23 @@ def _run_download_locked(t):
         except OSError:
             pass
         if not found:
+            hint = _cookies_stale_hint(tail)
             log.warning(
-                "download %s (%s): rc=0 but no output file found (%s)",
+                "download %s (%s): rc=0 but no output file found (%s)%s",
                 t.hash[:8], label, " | ".join(tail) or "no yt-dlp output",
+                (f" | {hint}" if hint else ""),
             )
             continue
         break
     if not found:
+        hint = _cookies_stale_hint(tail)
         with t.lock:
             t.state = "error"
             t.error = f"yt-dlp exited with code {rc}"
         log.warning(
-            "download failed: %s (%s): %s",
+            "download failed: %s (%s): %s%s",
             t.hash[:8], t.error, " | ".join(tail) or "no yt-dlp output",
+            (f" | {hint}" if hint else ""),
         )
         return
     with t.lock:
