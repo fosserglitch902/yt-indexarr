@@ -29,7 +29,11 @@ Options:
 
 
 Environment:
-  MIN_DURATION   Minimum video length in seconds (default: 300)
+  MIN_DURATION   Minimum video length in seconds (default: 300).  Applies to
+                 broad series-name searches only — when an episode title is
+                 given (the video we're hunting is known), or when
+                 EXPECTED_DURATION sets a window, this floor is relaxed so
+                 short episodes (minisodes/shorts) can match
   EXPECTED_DURATION  Expected episode runtime in seconds; when set, results are
                  filtered to this +/- EP_DURATION_BUFFER at the search stage so
                  multi-episode compilations are excluded (default: empty)
@@ -83,6 +87,9 @@ JSON_OUT=false
 BEST_ONLY=false
 DOWNLOAD=false
 DOWNLOAD_DIR="downloads"
+# Preserve original argv so the fallback re-run (see below) can re-invoke the
+# script with exactly the same options the caller passed.
+_ORIG_ARGS=("$@")
 
 
 while getopts ":s:S:E:t:n:p:d:o:DPbjh" opt; do
@@ -169,13 +176,25 @@ fi
 # Duration window.  When EXPECTED_DURATION (seconds) is known, filter results
 # to the episode's runtime +/- EP_DURATION_BUFFER so multi-episode
 # compilations are excluded at the search stage (yt-dlp fetches more to still
-# fill the per-query count).  Otherwise fall back to the MIN_DURATION floor.
+# fill the per-query count).  Short episodes (minisodes, ~2-3 min) get a real
+# window here — never clamp it up to MIN_DURATION, or the range inverts
+# (e.g. 172s episode -> [300, 232]) and matches nothing.  Without a known
+# runtime the MIN_DURATION floor guards broad series-name searches; an exact
+# episode title replaces it entirely so title-matched minisodes/shorts can pass.
 if [[ -n "$EXPECTED_DURATION" ]]; then
   DUR_MIN=$(( EXPECTED_DURATION - EP_DURATION_BUFFER ))
   DUR_MAX=$(( EXPECTED_DURATION + EP_DURATION_BUFFER ))
-  if (( DUR_MIN < MIN_DURATION )); then
-    DUR_MIN=$MIN_DURATION
+  if (( DUR_MIN < 0 )); then
+    DUR_MIN=0
   fi
+fi
+
+# When we are hunting one specific episode (a title is known), the title match
+# is the filter — not a blanket short-video floor — so short episodes (minisode
+# "Butlers" is ~3 min) can be found.  The floor still applies to broad searches.
+HAVE_TITLE=false
+if (( ${#EP_TITLES[@]} > 0 )); then
+  HAVE_TITLE=true
 fi
 
 
@@ -375,10 +394,15 @@ JQ
 # video fully.  --dump-json prints one JSON object per result.
 if [[ -n "$EXPECTED_DURATION" ]]; then
   QT_FILTER="duration >= ${DUR_MIN} and duration <= ${DUR_MAX}"
+  JQ_FLOOR="$DUR_MIN"
+elif $HAVE_TITLE; then
+  QT_FILTER="duration >= 0"
+  JQ_FLOOR=0
 else
   QT_FILTER="duration >= ${MIN_DURATION}"
+  JQ_FLOOR="$MIN_DURATION"
 fi
-export PER_QUERY QT_FILTER MIN_DURATION DUR_MIN DUR_MAX
+export PER_QUERY QT_FILTER JQ_FLOOR MIN_DURATION DUR_MIN DUR_MAX
 
 # Seed per-query inputs, then run queries concurrently (SEARCH_PARALLEL).
 for i in "${!queries[@]}"; do
@@ -398,7 +422,7 @@ seq 0 $(( ${#queries[@]} - 1 )) | xargs -P "$SEARCH_PARALLEL" -I{} bash -c '
     "ytsearch${PER_QUERY}:${q}" 2>>"$W/yt.err" |
     jq -c \
       --arg query "$q" \
-      --argjson min_duration "$MIN_DURATION" \
+      --argjson min_duration "$JQ_FLOOR" \
       --argjson dur_min "${DUR_MIN:-$MIN_DURATION}" \
       --argjson dur_max "${DUR_MAX:-0}" \
       -f "$filter" > "$W/raw.$i.jsonl" || true
@@ -413,6 +437,15 @@ cat "$WORKDIR/yt.err" >> "$ERRLOG" 2>/dev/null || true
 
 
 if [[ ! -s "$RAW" ]]; then
+  # A runtime window can come back completely empty even when the real video
+  # exists, because TVDB runtimes for specials/minisodes are frequently wrong
+  # (the "Butlers" minisode is ~3 min).  When an exact episode title is known,
+  # re-run once in relaxed title mode (no duration window) instead of failing.
+  if [[ -z "${RETRY:-}" && -n "${EXPECTED_DURATION:-}" && "$HAVE_TITLE" == true ]]; then
+    echo "No results within the ${EXPECTED_DURATION}s runtime window; retrying in title mode." >&2
+    export RETRY=1 EXPECTED_DURATION=
+    exec bash "$0" "${_ORIG_ARGS[@]}"
+  fi
   echo "ERROR: no results from any query." >&2
   if [[ -s "$ERRLOG" ]]; then
     echo "yt-dlp errors:" >&2
@@ -607,12 +640,16 @@ jq -c \
   # Duration sanity score.
   # When an expected runtime is known the window filter already excluded
   # anything outside it, so every survivor is in range and duration is not
-  # ranked (constant 5).  In the fallback (no expected duration) the classic
-  # range score applies: MIN_DURATION (default 5 min) up to 2h, with
-  # penalties scaling with extremity for clips/shorts and compilations.
+  # ranked (constant 5).  Same for a titled-episode hunt (minisode "Butlers"
+  # is ~3 min): the title match decides, so length is neutral instead of
+  # penalizing every short video below the probable threshold.  Only broad
+  # series-name searches rank by duration (MIN_DURATION default 5 min up to
+  # 2h, with penalties scaling with extremity for clips/shorts).
   ((.duration // 0) | if type == "number" then . else (try tonumber catch 0) end) as $dur |
   (
     if $expected_duration > 0 then
+      5
+    elif ($ep_titles | length) > 0 then
       5
     elif $dur >= $min_duration and $dur <= 7200 then
       5
@@ -735,6 +772,19 @@ jq -c -s --argjson max "$MAX_RESULTS" '
   | .[0:$max]
   | .[]
 ' "$SCORED" > "$SORTED"
+
+
+# Fallback: a runtime-window pass can return nothing even when the real video
+# exists, because TVDB runtimes for specials/minisodes are frequently missing
+# or wrong (the "Butlers" minisode is a ~3min special).  When we know the
+# episode title but the windowed pass found no probable match, re-run once in
+# relaxed title mode (no duration window) and let the title scoring decide.
+if [[ -z "${RETRY:-}" && -n "${EXPECTED_DURATION:-}" && "$HAVE_TITLE" == true ]] \
+   && ! jq -s '[.[] | select(.probable == true)] | length > 0' "$SCORED" 2>/dev/null | grep -q true; then
+  echo "No probable match within the ${EXPECTED_DURATION}s runtime window; retrying in title mode." >&2
+  export RETRY=1 EXPECTED_DURATION=
+  exec bash "$0" "${_ORIG_ARGS[@]}"
+fi
 
 
 if [[ ! -s "$SORTED" ]]; then

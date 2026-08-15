@@ -246,16 +246,15 @@ def season_episodes(tvdbid, season):
 def resolve_title(tvdbid, season: int, number: int, name: str = ""):
     """One-call helper: tvdbid or name + season + number -> episode name.
 
-    Prefers the tvdbid lookup; falls back to a series-name lookup when tvdbid
-    is absent (Prowlarr does not always forward it).  Returns None when
-    nothing resolves.
+    Prefers the tvdbid lookup and falls back to a series-name lookup when the
+    tvdbid is absent *or* unmapped on TVMaze (some shows, e.g. Bluey, have no
+    thetvdb external id there).  Returns None when nothing resolves.
     """
+    show_id = None
     if tvdbid and str(tvdbid).isdigit():
         show_id = show_by_tvdbid(int(tvdbid))
-    elif name:
+    if not show_id and name:
         show_id = show_by_name(name)
-    else:
-        return None
     if not show_id:
         return None
     return episode_title(show_id, season, number)
@@ -266,12 +265,11 @@ def resolve_runtime(tvdbid, season: int, number: int, name: str = ""):
 
     Returns None when nothing resolves (callers degrade to no filter).
     """
+    show_id = None
     if tvdbid and str(tvdbid).isdigit():
         show_id = show_by_tvdbid(int(tvdbid))
-    elif name:
+    if not show_id and name:
         show_id = show_by_name(name)
-    else:
-        return None
     if not show_id:
         return None
     return episode_runtime(show_id, season, number)
