@@ -354,10 +354,11 @@ baseline. The same probe supplies the playlist's **seeders/peers** (YouTube
 playlists expose no view count of their own, so the first video's view count
 stands in, like the quality) and the playlist size shown in the release title.
 
-Release titles show the **YouTube channel** after the release name instead of
-the TVDB episode title (the episode title still drives the search/matching):
-single episodes render as `Series S01E01 WEB 1080p - Channel`, and season
-packs add the playlist size, e.g. `Series S01 WEB 1080p - Channel x10`.
+Release titles show the **YouTube channel** after the release name alongside
+the video's own title (the TVDB episode title still drives the search/matching,
+but is not shown): single episodes render as
+`Series S01E01 WEB 1080p - Video Title - Channel`, and season packs add the
+playlist size, e.g. `Series S01 WEB 1080p - Playlist Title - Channel x10`.
 
 Episode mapping prefers explicit `S03E24`-style tokens in the video title,
 then season episode metadata (titles + per-episode runtimes) from **TheTVDB**

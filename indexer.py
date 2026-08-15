@@ -267,7 +267,11 @@ def run_search(
         raw_title = data.get("title", "")
         title = data.get("normalized_title") or raw_title
         channel = (data.get("channel") or "").strip()
-        display_title = f"{title} - {channel}" if channel else title
+        display_title = title
+        if raw_title and raw_title != title:
+            display_title = f"{display_title} - {raw_title}"
+        if channel:
+            display_title = f"{display_title} - {channel}"
         items.append(
             {
                 "title": title,
@@ -502,6 +506,8 @@ def run_season_search(series: str, season: int, tvdbid: str = "") -> list:
         if res:
             base = f"{base} {res}"
         display = base
+        if title and title != base:
+            display = f"{display} - {title}"
         if channel:
             display = f"{display} - {channel}"
         if count:
