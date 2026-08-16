@@ -322,7 +322,10 @@ Sonarr-triggered grab — the best-format fallback ladder, player-client and PO
 token overrides, cookies, and `DL_DELAY` pacing all apply. Videos are saved as
 `<title>.<ext>`; playlists download every video the same way, one file per
 video title, with per-item progress in the UI. Duplicates are refused while the
-URL is already in the queue.
+URL is already in the queue. Thumbnails come from the video's own YouTube image
+(`i.ytimg.com/vi/<id>/hqdefault.jpg`); manual playlists use the first video's
+thumbnail since there is no TVDB series to map a poster from. The history list
+re-renders on a poll, but keeps playlist packs you have expanded open.
 
 The **Settings** tab edits a shared config file (`YT_UI_CONFIG_FILE`, default
 `/data/config.json`): TVDB API key, PO provider, output container/codec, log

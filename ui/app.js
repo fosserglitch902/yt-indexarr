@@ -122,6 +122,7 @@ function renderItem(item) {
 
   if (isPlaylist) {
     const det = el("details", "item");
+    det.dataset.hash = item.hash || "";
     const sum = el("summary");
     sum.append(top);
     det.append(sum);
@@ -144,12 +145,21 @@ async function refreshHistory() {
   }
   const data = await res.json();
   const items = data.items || [];
-  list.replaceChildren();
+  // Preserve which playlist packs the user has expanded across the periodic
+  // re-render; otherwise the full DOM replace collapses every <details>.
+  const open = new Set(
+    Array.from(list.querySelectorAll("details.item[open]"),
+      (d) => d.dataset.hash).filter(Boolean),
+  );
   if (!items.length) {
-    list.append(el("div", "empty", "No downloads yet — paste a YouTube URL above or add a torrent via qBittorrent."));
+    list.replaceChildren(el("div", "empty", "No downloads yet — paste a YouTube URL above or add a torrent via qBittorrent."));
     return;
   }
-  items.forEach((it) => list.append(renderItem(it)));
+  const nodes = items.map((it) => renderItem(it));
+  nodes.forEach((n) => {
+    if (n.tagName === "DETAILS" && open.has(n.dataset.hash)) n.open = true;
+  });
+  list.replaceChildren(...nodes);
 }
 
 /* ---------- manual download ---------- */

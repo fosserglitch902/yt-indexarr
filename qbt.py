@@ -434,12 +434,16 @@ def _is_youtube_url(url):
     ))
 
 
-def _fetch_title(url):
-    """Best-effort title for a YouTube URL (flat dump, no download).
+def _fetch_meta(url):
+    """Best-effort (title, thumbnail) for a YouTube URL (flat dump).
 
     Uses the same player-client / PO-token overrides as downloads so titles
     resolve even for SABR-restricted videos the default client rejects.
+    Single videos derive the thumbnail from the id in the URL; playlists take
+    the first video's id from the dump so the UI gets an image even without a
+    TVDB poster. --playlist-items 1 keeps playlist dumps to one entry.
     """
+    thumb = _youtube_thumbnail(url)
     extractor_args = []
     if PLAYER_CLIENT:
         extractor_args = ["--extractor-args",
@@ -447,12 +451,15 @@ def _fetch_title(url):
     if _pot_provider():
         extractor_args += ["--extractor-args",
                            f"youtubepot-bgutilhttp:base_url={_pot_provider()}"]
-    cmd = [YTDLP, "--ignore-config", "--flat-playlist", "--dump-json",
-           "--no-warnings", "--retries", "2", *extractor_args, "--", url]
+    cmd = [YTDLP, "--ignore-config", "--flat-playlist", "--playlist-items", "1",
+           "--dump-json", "--no-warnings", "--retries", "2",
+           *extractor_args, "--", url]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
-        return ""
+        return "", thumb
+    title = ""
+    first_vid = ""
     for line in proc.stdout.splitlines():
         line = line.strip()
         if not line:
@@ -462,15 +469,23 @@ def _fetch_title(url):
         except json.JSONDecodeError:
             continue
         if d.get("_type") == "playlist":
-            return d.get("title") or ""
-        if d.get("title"):
-            return d["title"]
-    return ""
+            title = d.get("title") or title
+            continue
+        if not first_vid:
+            first_vid = d.get("id") or ""
+        if not title:
+            title = d.get("title") or ""
+    if not thumb and first_vid:
+        thumb = _youtube_thumbnail_id(first_vid)
+    return title, thumb
+
+
+def _youtube_thumbnail_id(vid):
+    return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else ""
 
 
 def _youtube_thumbnail(url):
-    vid = _youtube_id(url)
-    return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else ""
+    return _youtube_thumbnail_id(_youtube_id(url))
 
 
 def _fill_metadata(t):
@@ -1542,7 +1557,12 @@ class Handler(BaseHTTPRequestHandler):
                 400,
             )
             return
-        name = (data.get("name") or "").strip() or _fetch_title(url)
+        name = (data.get("name") or "").strip()
+        thumb = ""
+        if not name:
+            name, thumb = _fetch_meta(url)
+        else:
+            thumb = _youtube_thumbnail(url)
         if not name:
             name = _youtube_id(url) or "video"
         hash_ = hashlib.sha1(url.encode("utf-8")).hexdigest()
@@ -1554,6 +1574,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         t = Torrent(hash_, name, DL_DIR, "", "manual", url, False,
                     manual=True)
+        if thumb:
+            t.thumbnail_url = thumb
         with _registry_lock:
             _registry[hash_] = t
         _record_torrent(t)
