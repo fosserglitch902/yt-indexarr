@@ -46,6 +46,39 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
 .view.active { display: block; }
 .empty { color: var(--muted); padding: 24px 0; text-align: center; }
 
+.manual {
+  display: flex;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+.manual input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+}
+.manual button {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  padding: 8px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.manual button:hover { filter: brightness(1.1); }
+#manual-msg { align-self: center; color: var(--muted); font-size: 12.5px; }
+#manual-msg.ok { color: var(--ok); }
+#manual-msg.err { color: var(--err); }
+
 .item {
   display: flex;
   gap: 12px;

@@ -296,6 +296,14 @@ falling back to the video's own thumbnail). The frontend is vanilla JS with no
 framework or database, and posters load directly from the browser, so RAM stays
 near-zero.
 
+The **Downloads** tab has a manual download box: paste any YouTube video or
+playlist URL and it is queued through the exact same downloader path as a
+Sonarr-triggered grab — the best-format fallback ladder, player-client and PO
+token overrides, cookies, and `DL_DELAY` pacing all apply. Videos are saved as
+`<title>.<ext>`; playlists download every video the same way, one file per
+video title, with per-item progress in the UI. Duplicates are refused while the
+URL is already in the queue.
+
 The **Settings** tab edits a shared config file (`YT_UI_CONFIG_FILE`, default
 `/data/config.json`): TVDB API key, PO provider, output container/codec, log
 levels, indexer/downloader credentials, and a paste box that writes your

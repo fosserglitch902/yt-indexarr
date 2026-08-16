@@ -15,7 +15,15 @@
   </nav>
 </header>
 <main>
-  <section id="view-history" class="view active"></section>
+  <section id="view-history" class="view active">
+    <form id="manual-form" class="manual">
+      <input id="manual-url" type="text"
+             placeholder="Paste a YouTube video or playlist URL…" required>
+      <button type="submit">Download</button>
+      <span id="manual-msg"></span>
+    </form>
+    <div id="history-list"></div>
+  </section>
   <section id="view-settings" class="view"></section>
 </main>
 

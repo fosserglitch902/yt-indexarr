@@ -105,6 +105,7 @@ function renderItem(item) {
   badges.append(badge(STATE_LABEL[item.state] || item.state || "—",
     item.state === "error" ? "err" : (item.state === "downloading") ? "warn" : ""));
   if (item.is_playlist) badges.append(badge("playlist " + item.episodes.length + " eps"));
+  if (item.manual) badges.append(badge("manual"));
   if (item.error) badges.append(badge(esc(item.error), "err"));
   if (item.tags) badges.append(badge(esc(item.tags)));
   body.append(badges);
@@ -132,7 +133,7 @@ function renderItem(item) {
 }
 
 async function refreshHistory() {
-  const list = $("#view-history");
+  const list = $("#history-list");
   let res;
   try {
     res = await api("/api/ui/history");
@@ -144,11 +145,46 @@ async function refreshHistory() {
   const items = data.items || [];
   list.replaceChildren();
   if (!items.length) {
-    list.append(el("div", "empty", "No downloads yet — add a torrent via qBittorrent to get started."));
+    list.append(el("div", "empty", "No downloads yet — paste a YouTube URL above or add a torrent via qBittorrent."));
     return;
   }
   items.forEach((it) => list.append(renderItem(it)));
 }
+
+/* ---------- manual download ---------- */
+
+$("#manual-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const input = $("#manual-url");
+  const msg = $("#manual-msg");
+  const url = input.value.trim();
+  if (!url) return;
+  msg.textContent = "Adding…";
+  msg.className = "";
+  input.disabled = true;
+  try {
+    const r = await api("/api/ui/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) {
+      msg.textContent = "Added to queue.";
+      msg.className = "ok";
+      input.value = "";
+      refreshHistory();
+    } else {
+      msg.textContent = j.error || "Failed to add download.";
+      msg.className = "err";
+    }
+  } catch (e) {
+    msg.textContent = "Failed to add download.";
+    msg.className = "err";
+  } finally {
+    input.disabled = false;
+  }
+});
 
 /* ---------- settings ---------- */
 

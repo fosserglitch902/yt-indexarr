@@ -25,6 +25,7 @@ Run it separately from indexer.py so the two stay on different ports:
 import base64
 import collections
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -247,7 +248,7 @@ def _b64url_decode(value):
 
 class Torrent:
     def __init__(self, hash_, name, save_path, category, tags, real_url, paused,
-                 tvdbid="", channel=""):
+                 tvdbid="", channel="", manual=False):
         self.hash = hash_
         self.name = name
         self.save_path = save_path
@@ -256,6 +257,7 @@ class Torrent:
         self.real_url = real_url
         self.tvdbid = tvdbid or ""
         self.channel = channel or ""
+        self.manual = manual
         self.poster_url = ""
         self.thumbnail_url = ""
         self.episodes = []
@@ -346,6 +348,7 @@ def _torrent_record(t):
             "category": t.category,
             "tags": t.tags,
             "tvdbid": t.tvdbid,
+            "manual": t.manual,
             "poster_url": t.poster_url,
             "thumbnail_url": t.thumbnail_url,
             "state": t.state,
@@ -419,6 +422,50 @@ def _history_loop():
 def _youtube_id(url):
     m = re.search(r"(?:[?&]v=|/watch/|youtu\.be/)([A-Za-z0-9_-]{11})", url)
     return m.group(1) if m else None
+
+
+def _is_youtube_url(url):
+    """True for a video/playlist/shorts URL on the youtube domains we accept."""
+    return bool(re.match(
+        r"^https?://(?:[^/]+\.)?youtube\.com/(?:watch|playlist|shorts|live|embed)"
+        r"(?:[/?]|$)"
+        r"|^https?://youtu\.be/",
+        url or "", re.IGNORECASE,
+    ))
+
+
+def _fetch_title(url):
+    """Best-effort title for a YouTube URL (flat dump, no download).
+
+    Uses the same player-client / PO-token overrides as downloads so titles
+    resolve even for SABR-restricted videos the default client rejects.
+    """
+    extractor_args = []
+    if PLAYER_CLIENT:
+        extractor_args = ["--extractor-args",
+                          f"youtube:player_client={PLAYER_CLIENT}"]
+    if _pot_provider():
+        extractor_args += ["--extractor-args",
+                           f"youtubepot-bgutilhttp:base_url={_pot_provider()}"]
+    cmd = [YTDLP, "--ignore-config", "--flat-playlist", "--dump-json",
+           "--no-warnings", "--retries", "2", *extractor_args, "--", url]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if d.get("_type") == "playlist":
+            return d.get("title") or ""
+        if d.get("title"):
+            return d["title"]
+    return ""
 
 
 def _youtube_thumbnail(url):
@@ -932,6 +979,162 @@ def _run_season_download(t):
     )
 
 
+def _run_manual_playlist_download(t):
+    """Download every video of a manually-added playlist, best quality each."""
+    dl_dir = _download_dir(t)
+    try:
+        os.makedirs(dl_dir, exist_ok=True)
+    except OSError as e:
+        with t.lock:
+            t.state = "error"
+            t.error = f"cannot create download dir: {e}"
+        _record_torrent(t)
+        _history_save()
+        return
+    vids = _enumerate_playlist(t.real_url)
+    if not vids:
+        with t.lock:
+            t.state = "error"
+            t.error = "cannot enumerate playlist"
+        _record_torrent(t)
+        _history_save()
+        return
+    with t.lock:
+        t.state = "downloading"
+    fmt, merge = _format_spec(_codec(), bool(shutil.which("ffmpeg")))
+    extractor_args = []
+    if PLAYER_CLIENT:
+        extractor_args = ["--extractor-args",
+                          f"youtube:player_client={PLAYER_CLIENT}"]
+    if _pot_provider():
+        extractor_args += ["--extractor-args",
+                           f"youtubepot-bgutilhttp:base_url={_pot_provider()}"]
+    total = len(vids)
+    done = 0
+    completed_files = []
+    total_size = 0
+    log.info(
+        "manual playlist download start: %s (%d videos)",
+        t.hash[:8], total,
+    )
+    for idx, vid in enumerate(vids, start=1):
+        safe = _sanitize(vid["title"] or vid["id"])
+        out = os.path.join(dl_dir, safe + ".%(ext)s")
+        rec = {
+            "num": idx, "url": vid["url"], "title": vid["title"] or vid["id"],
+            "state": "downloading", "size": 0, "completion_on": 0, "error": None,
+        }
+        t.episodes.append(rec)
+        _record_torrent(t)
+        item_size = 0
+
+        def on_line(line, m):
+            nonlocal item_size
+            if not m:
+                return
+            slot = float(m.group(1)) / 100.0
+            if not item_size:
+                item_size = _parse_total_size(line) or 0
+            with t.lock:
+                t.progress = min(0.999, (done + slot) / total)
+                if item_size:
+                    est = int(item_size * (done + slot))
+                    t.size = est
+                    t.downloaded = int(est * t.progress)
+
+        # Find the output file by the exact sanitized title; prefer the
+        # newest, which also treats an already-present file (yt-dlp skips
+        # it with "has already been downloaded") as completed.
+        def _find_item():
+            try:
+                cands = sorted(
+                    (f for f in glob.glob(os.path.join(dl_dir, safe + ".*"))
+                     if os.path.isfile(f) and not _is_fragment(f)),
+                    key=os.path.getmtime,
+                )
+            except OSError:
+                return None
+            return cands[-1] if cands else None
+
+        time.sleep(DL_DELAY)
+        fp = None
+        for i, (label, afmt, amerge) in enumerate(
+                _fallback_attempts(fmt, merge)):
+            if i:
+                time.sleep(DL_DELAY)
+            cmd = [YTDLP, "--newline", "--no-playlist", *extractor_args,
+                   *_cookies_arg(), "-f", afmt, *amerge, "-o", out, "--",
+                   vid["url"]]
+            rc, tail = _run_ytdlp(t, cmd, on_line)
+            if rc == -1:
+                log.warning(
+                    "cannot launch yt-dlp for manual item %d: %s",
+                    idx, " | ".join(tail),
+                )
+                break
+            if rc != 0:
+                hint = _cookies_stale_hint(tail)
+                log.warning(
+                    "manual item %d (%s) failed (rc=%s): %s%s",
+                    idx, label, rc, " | ".join(tail) or "no yt-dlp output",
+                    (f" | {hint}" if hint else ""),
+                )
+                continue
+            fp = _find_item()
+            if not fp:
+                hint = _cookies_stale_hint(tail)
+                log.warning(
+                    "manual item %d (%s): rc=0 but no output file found (%s)%s",
+                    idx, label, " | ".join(tail) or "no yt-dlp output",
+                    (f" | {hint}" if hint else ""),
+                )
+                continue
+            break
+        if fp is None:
+            rec["state"] = "error"
+            rec["error"] = "all attempts failed"
+            _record_torrent(t)
+        else:
+            rec["state"] = "completed"
+            rec["size"] = os.path.getsize(fp)
+            rec["completion_on"] = int(time.time())
+            _record_torrent(t)
+            completed_files.append(fp)
+            total_size += rec["size"]
+            log.info(
+                "manual item complete %d/%d: %s (%.0f MB)",
+                idx, total, os.path.basename(fp), rec["size"] / (1024 * 1024),
+            )
+        done += 1
+        with t.lock:
+            t.progress = (done / total) if done < total else 1.0
+
+    if not completed_files:
+        with t.lock:
+            t.state = "error"
+            t.error = "no playlist items downloaded"
+        _record_torrent(t)
+        _history_save()
+        return
+    with t.lock:
+        t.progress = 1.0
+        t.state = "uploading"
+        t.completion_on = int(time.time())
+        t.last_activity = t.completion_on
+        t.file_paths = completed_files
+        t.file_path = completed_files[0]
+        t.size = total_size
+        t.downloaded = total_size
+        t.uploaded = total_size
+        t.ratio = 1.0
+    _record_torrent(t)
+    _history_save()
+    log.info(
+        "manual playlist download complete: %s (%d videos, %d MB)",
+        t.hash[:8], len(completed_files), total_size // (1024 * 1024),
+    )
+
+
 def _run_download(t):
     # Gate concurrent downloads: at most MAX_PARALLEL yt-dlp processes run at
     # once across all torrents.  A torrent waiting for a slot reports queuedDL
@@ -955,6 +1158,9 @@ def _run_download(t):
 
 
 def _run_download_locked(t):
+    if t.manual and _is_playlist_url(t.real_url):
+        _run_manual_playlist_download(t)
+        return
     if _is_playlist_url(t.real_url):
         _run_season_download(t)
         return
@@ -1322,6 +1528,40 @@ class Handler(BaseHTTPRequestHandler):
         _apply_log_level()
         self._json({"ok": True})
 
+    def _ui_download(self, params, json_body):
+        """Queue a manual YouTube download (video or playlist) at best quality."""
+        data = json_body if isinstance(json_body, dict) else params
+        url = (data.get("url") or "").strip()
+        if not url:
+            self._json({"ok": False, "error": "missing url"}, 400)
+            return
+        if not _is_youtube_url(url):
+            self._json(
+                {"ok": False,
+                 "error": "not a supported YouTube URL (video or playlist)"},
+                400,
+            )
+            return
+        name = (data.get("name") or "").strip() or _fetch_title(url)
+        if not name:
+            name = _youtube_id(url) or "video"
+        hash_ = hashlib.sha1(url.encode("utf-8")).hexdigest()
+        if _lookup(hash_):
+            self._json(
+                {"ok": False, "error": "already in the queue", "hash": hash_},
+                409,
+            )
+            return
+        t = Torrent(hash_, name, DL_DIR, "", "manual", url, False,
+                    manual=True)
+        with _registry_lock:
+            _registry[hash_] = t
+        _record_torrent(t)
+        threading.Thread(target=_fill_metadata, args=(t,), daemon=True).start()
+        log.info("manual download queued: %s (%s)", hash_[:8], url)
+        _start_download(t)
+        self._json({"ok": True, "hash": hash_})
+
     # -- routing ---------------------------------------------------------
 
     def do_GET(self):
@@ -1361,12 +1601,14 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html") or path.startswith("/ui/"):
             self._serve_static(path)
             return
-        if path in ("/api/ui/history", "/api/ui/settings"):
+        if path in ("/api/ui/history", "/api/ui/settings", "/api/ui/download"):
             if _auth_enabled() and not _valid_sid(self._sid()):
                 self._text("Forbidden", 403)
                 return
             if path == "/api/ui/history":
                 self._ui_history()
+            elif path == "/api/ui/download":
+                self._ui_download(params, json_body)
             elif self.command == "POST":
                 self._ui_settings_post(params, json_body)
             else:
