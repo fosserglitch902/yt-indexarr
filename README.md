@@ -462,7 +462,8 @@ docker run -d \
   --name yt-indexarr \
   -p 9117:9117 \
   -p 9177:9177 \
-  -v yt-indexarr-data:/data \
+  -v yt-indexarr-config:/data/config \
+  -v yt-indexarr-data:/data/downloads \
   ghcr.io/fosserglitch902/yt-indexarr:latest
 ```
 
@@ -477,7 +478,8 @@ services:
       - "9117:9117"   # Torznab indexer
       - "9177:9177"   # qBittorrent download spoofer
     volumes:
-      - yt-indexarr-data:/data   # downloads (default /data/downloads)
+      - yt-indexarr-config:/data/config    # config.json + history.json + cookies.txt + API caches
+      - yt-indexarr-data:/data/downloads   # downloaded media only
     environment:
       - YT_INDEXER_HOST=0.0.0.0
       - YT_INDEXER_PORT=9117
@@ -491,6 +493,9 @@ services:
       - YT_QBT_PASSWORD=change-me
       - YT_QBT_REQUIRE_AUTH=0
       - YT_QBT_DL_DIR=/data/downloads
+      - YT_QBT_COOKIES=/data/config/cookies.txt
+      - YT_QBT_HISTORY_FILE=/data/config/history.json
+      - YT_UI_CONFIG_FILE=/data/config/config.json
       - POT_PROVIDER=http://pot:4416
       # - TVDB_API_KEY=your-thetvdb-key   # localized episode titles
       # - TVDB_PIN=your-pin               # only for user-supported keys
@@ -503,6 +508,7 @@ services:
     ports:
       - "4416:4416"
 volumes:
+  yt-indexarr-config:
   yt-indexarr-data:
 ```
 
