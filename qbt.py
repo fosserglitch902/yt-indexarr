@@ -77,7 +77,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-# The settings below resolve lazily via config (env > /data/config.json >
+# The settings below resolve lazily via config (env > /data/config/config.json >
 # default) so the dashboard UI can change them without a restart; docker-compose
 # env vars still win over any UI edit.
 def _username():
@@ -157,7 +157,7 @@ _PUBLIC_PATHS = {
 UI_DIR = os.environ.get(
     "YT_QBT_UI_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 )
-COOKIES_FILE_DEFAULT = "/data/cookies.txt"
+COOKIES_FILE_DEFAULT = "/data/config/cookies.txt"
 _UI_MIME = {
     "html": "text/html; charset=utf-8",
     "css": "text/css; charset=utf-8",
@@ -328,7 +328,7 @@ def _download_dir(t):
 
 # ---- dashboard history (persisted, survives restarts) -----------------------
 
-HISTORY_FILE = os.environ.get("YT_QBT_HISTORY_FILE", "/data/history.json")
+HISTORY_FILE = os.environ.get("YT_QBT_HISTORY_FILE", "/data/config/history.json")
 _HISTORY_FLUSH_EVERY = 5.0
 _history = {}
 _history_lock = threading.Lock()

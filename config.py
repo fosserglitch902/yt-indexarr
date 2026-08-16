@@ -12,7 +12,7 @@ import os
 import threading
 import time
 
-CONFIG_FILE = os.environ.get("YT_UI_CONFIG_FILE", "/data/config.json")
+CONFIG_FILE = os.environ.get("YT_UI_CONFIG_FILE", "/data/config/config.json")
 _REFETCH_INTERVAL = 1.0
 
 _lock = threading.Lock()

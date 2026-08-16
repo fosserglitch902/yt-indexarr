@@ -22,12 +22,7 @@ log = logging.getLogger("yt-tvmaze")
 
 TVMAZE_API = os.environ.get("TVMAZE_API", "https://api.tvmaze.com")
 TVMAZE_TIMEOUT = float(os.environ.get("TVMAZE_TIMEOUT", "5"))
-CACHE_FILE = os.environ.get(
-    "TVMAZE_CACHE_FILE",
-    os.path.join(
-        os.path.expanduser("~"), ".cache", "yt-indexarr", "tvmaze.json"
-    ),
-)
+CACHE_FILE = os.environ.get("TVMAZE_CACHE_FILE", "/data/config/cache/tvmaze.json")
 CACHE_TTL = int(os.environ.get("TVMAZE_CACHE_TTL", str(7 * 24 * 3600)))
 
 _cache = {}

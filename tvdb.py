@@ -30,14 +30,8 @@ log = logging.getLogger("yt-tvdb")
 
 TVDB_API = os.environ.get("TVDB_API", "https://api4.thetvdb.com/v4")
 TVDB_TIMEOUT = float(os.environ.get("TVDB_TIMEOUT", "5"))
-TOKEN_FILE = os.environ.get(
-    "TVDB_TOKEN_FILE",
-    os.path.join(os.path.expanduser("~"), ".cache", "yt-indexarr", "tvdb_token.json"),
-)
-CACHE_FILE = os.environ.get(
-    "TVDB_CACHE_FILE",
-    os.path.join(os.path.expanduser("~"), ".cache", "yt-indexarr", "tvdb.json"),
-)
+TOKEN_FILE = os.environ.get("TVDB_TOKEN_FILE", "/data/config/cache/tvdb_token.json")
+CACHE_FILE = os.environ.get("TVDB_CACHE_FILE", "/data/config/cache/tvdb.json")
 CACHE_TTL = int(os.environ.get("TVDB_CACHE_TTL", str(7 * 24 * 3600)))
 TOKEN_TTL = 27 * 24 * 3600  # tokens last ~1 month; refresh slightly early
 

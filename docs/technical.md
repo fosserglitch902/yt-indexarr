@@ -252,14 +252,14 @@ key: `youtubeindexer` (set `YT_INDEXER_API_KEY` to change it).
 | `YT_CODEC` | Video codec the downloader will use, `auto`/`av1`/`vp9`/`h264` (default `auto`). Also scales the reported Torznab `size` (av1 baseline, vp9 ×1.4, h264 ×2.0) so the size tracks what is downloaded. See the codec notes above |
 | `TVMAZE_API` | TVMaze base URL (default `https://api.tvmaze.com`) |
 | `TVMAZE_TIMEOUT` | Per-lookup timeout seconds (default 5) |
-| `TVMAZE_CACHE_FILE` | Disk cache path (default `~/.cache/yt-indexarr/tvmaze.json`) |
+| `TVMAZE_CACHE_FILE` | Disk cache path (default `/data/config/cache/tvmaze.json`) |
 | `TVMAZE_CACHE_TTL` | Cache TTL seconds (default 7 days) |
 | `TVDB_API_KEY` | TheTVDB v4 API key (enables localized episode titles) |
 | `TVDB_PIN` | TheTVDB subscriber PIN (only for user-supported keys) |
 | `TVDB_API` | TheTVDB v4 base URL (default `https://api4.thetvdb.com/v4`) |
 | `TVDB_TIMEOUT` | Per-lookup timeout seconds (default 5) |
-| `TVDB_TOKEN_FILE` | Token cache path (default `~/.cache/yt-indexarr/tvdb_token.json`) |
-| `TVDB_CACHE_FILE` | Disk cache path (default `~/.cache/yt-indexarr/tvdb.json`) |
+| `TVDB_TOKEN_FILE` | Token cache path (default `/data/config/cache/tvdb_token.json`) |
+| `TVDB_CACHE_FILE` | Disk cache path (default `/data/config/cache/tvdb.json`) |
 | `TVDB_CACHE_TTL` | Cache TTL seconds (default 7 days) |
 
 ## `qbt.py` — qBittorrent-compatible download spoofer
@@ -294,16 +294,16 @@ Run it on its **own port** (default `9177`) — separate from the indexer on
 | `YT_QBT_YTDLP` | `yt-dlp` binary (default `yt-dlp`) |
 | `YT_QBT_PLAYER_CLIENT` | yt-dlp YouTube player client(s) for downloads, comma-separated fallback chain (default `tv_embedded,android_vr,web,tv_simply,android`) |
 | `POT_PROVIDER` | Optional GVS PO token provider base URL (e.g. `http://127.0.0.1:4416`); shared by the **search script and the downloader** — one value, one name. Passed to yt-dlp as `--extractor-args youtubepot-bgutilhttp:base_url=`. Empty (default) disables. Needed to unlock high-res formats on SABR-forced videos (see below). Requires the provider plugin + a Deno 2.3+ runtime with the `yt-dlp-ejs` scripts installed on the host running the probe. The downloader also accepts the legacy `YT_QBT_POT_PROVIDER` name (deprecated) |
-| `YT_QBT_COOKIES` | Optional Netscape-format browser cookies file, passed to yt-dlp as `--cookies`. Logged-in cookies make downloads look far more legitimate and are the most reliable way to reduce YouTube 403 / SABR-restriction failures (see [below](#browser-cookies-and-403s)). Empty (default) disables |
+| `YT_QBT_COOKIES` | Optional Netscape-format browser cookies file, passed to yt-dlp as `--cookies` (default path `/data/config/cookies.txt`; "cookies enabled" only when the file exists). Logged-in cookies make downloads look far more legitimate and are the most reliable way to reduce YouTube 403 / SABR-restriction failures (see [below](#browser-cookies-and-403s)). Empty (default) disables |
 | `YT_QBT_DL_DIR` | Save path when the client sends none (default `~/downloads`) |
 | `YT_QBT_EP_DURATION_BUFFER` | ± seconds around a mapped episode's runtime when checking whether a playlist video is that episode (default 60; mirrors the search script's `EP_DURATION_BUFFER`) |
 | `YT_CODEC` | Video codec for downloads, `auto`/`av1`/`vp9`/`h264` (default `auto`). Falls back to best format when the codec is unavailable. See the codec notes in the indexer section. Shared with the indexer's size estimate |
 | `YT_QBT_OUTPUT_EXT` | Output container for downloads, `mkv`/`mp4` (default `mkv`). `mkv` holds every codec YouTube serves (incl. av01/vp9 + opus), so the highest-quality stream flows through; `mp4` biases to h264/AAC-paired streams so direct-play stays universal (opaque to browsers/Apple) |
 | `YT_QBT_MAX_PARALLEL` | Maximum concurrent yt-dlp downloads across all torrents (default 2). Extra torrents wait in a Sonarr-visible "Queued" state until a slot frees. Lower values throttle YouTube requests and reduce rate-limit / bot-check failures on rapid sequential episode downloads |
 | `YT_QBT_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
-| `YT_QBT_HISTORY_FILE` | Download-history JSON the dashboard reads (default `/data/history.json`) |
+| `YT_QBT_HISTORY_FILE` | Download-history JSON the dashboard reads (default `/data/config/history.json`) |
 | `YT_QBT_UI_DIR` | Directory holding the dashboard static files (default `./ui` next to `qbt.py`) |
-| `YT_UI_CONFIG_FILE` | Shared settings JSON the dashboard writes (default `/data/config.json`); env vars always win over it |
+| `YT_UI_CONFIG_FILE` | Shared settings JSON the dashboard writes (default `/data/config/config.json`); env vars always win over it |
 
 ### Dashboard
 
@@ -328,9 +328,9 @@ thumbnail since there is no TVDB series to map a poster from. The history list
 re-renders on a poll, but keeps playlist packs you have expanded open.
 
 The **Settings** tab edits a shared config file (`YT_UI_CONFIG_FILE`, default
-`/data/config.json`): TVDB API key, PO provider, output container/codec, log
+`/data/config/config.json`): TVDB API key, PO provider, output container/codec, log
 levels, indexer/downloader credentials, and a paste box that writes your
-Netscape cookies into `YT_QBT_COOKIES`'s file (default `/data/cookies.txt`).
+Netscape cookies into `YT_QBT_COOKIES`'s file (default `/data/config/cookies.txt`).
 Compose env vars **always win** over UI edits — each row shows a "set by compose
 (overrides UI)" badge when an env var is active. Secrets are never echoed back.
 When auth is enabled (`YT_QBT_REQUIRE_AUTH=1`), the UI asks you to sign in with
@@ -454,7 +454,7 @@ To recover full quality reliably, provide browser cookies via `YT_QBT_COOKIES`
 be 403/SABR-flagged. Export them on a machine with your browser open (an
 "Export Cookies" extension, or Chrome's `--dump-cookies`), then copy the
 resulting Netscape-format `cookies.txt` to the path you set for
-`YT_QBT_COOKIES` (e.g. `/data/cookies.txt`, mounted via the compose volume).
+`YT_QBT_COOKIES` (e.g. `/data/config/cookies.txt`, mounted via the compose volume).
 While logged in, `yt-dlp --cookies-from-browser firefox --skip-download -O
 "%(id)s" <url>` on a dev box is a quick way to verify a browser's cookies
 bypass the 403 before you deploy them.
@@ -595,9 +595,9 @@ Sonarr should poll in the background:
 | `YT_QBT_YTDLP` | qbt | `yt-dlp` |
 | `YT_QBT_COOKIES` | qbt (+ UI paste box) | empty |
 | `YT_QBT_LOG_LEVEL` | qbt (+ UI) | `INFO` |
-| `YT_QBT_HISTORY_FILE` | qbt | `/data/history.json` |
+| `YT_QBT_HISTORY_FILE` | qbt | `/data/config/history.json` |
 | `YT_QBT_UI_DIR` | qbt | `./ui` |
-| `YT_UI_CONFIG_FILE` | qbt (UI) | `/data/config.json` |
+| `YT_UI_CONFIG_FILE` | qbt (UI) | `/data/config/config.json` |
 | `YT_QBT_HOST` / `YT_QBT_PORT` | qbt | `0.0.0.0` / `9177` |
 | `YT_QBT_USERNAME` / `YT_QBT_PASSWORD` | qbt (+ UI) | `admin` / `adminadmin` |
 | `YT_QBT_REQUIRE_AUTH` | qbt (+ UI) | `0` |
@@ -610,9 +610,9 @@ Sonarr should poll in the background:
 | `YT_INDEXER_FALLBACK_QUERY` | indexer | `tv episode` |
 | `YT_INDEXER_LOG_LEVEL` | indexer (+ UI) | `INFO` |
 | `TVMAZE_API` / `TVMAZE_TIMEOUT` | indexer + qbt | `https://api.tvmaze.com` / 5 |
-| `TVMAZE_CACHE_FILE` / `TVMAZE_CACHE_TTL` | indexer + qbt | `~/.cache/yt-indexarr/tvmaze.json` / 7d |
+| `TVMAZE_CACHE_FILE` / `TVMAZE_CACHE_TTL` | indexer + qbt | `/data/config/cache/tvmaze.json` / 7d |
 | `TVDB_API` / `TVDB_TIMEOUT` | indexer + qbt | `https://api4.thetvdb.com/v4` / 5 |
 | `TVDB_API_KEY` | indexer + qbt (+ UI) | empty |
 | `TVDB_PIN` | indexer + qbt | empty |
-| `TVDB_TOKEN_FILE` / `TVDB_CACHE_FILE` | indexer + qbt | `~/.cache/yt-indexarr/tvdb_*.json` |
+| `TVDB_TOKEN_FILE` / `TVDB_CACHE_FILE` | indexer + qbt | `/data/config/cache/tvdb_*.json` |
 | `TVDB_CACHE_TTL` | indexer + qbt | 7d |
