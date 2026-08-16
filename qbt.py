@@ -962,7 +962,7 @@ def _run_season_download(t):
         return
     with t.lock:
         t.progress = 1.0
-        t.state = "uploading"
+        t.state = "stoppedUP"
         t.completion_on = int(time.time())
         t.last_activity = t.completion_on
         t.file_paths = completed_files
@@ -1118,7 +1118,7 @@ def _run_manual_playlist_download(t):
         return
     with t.lock:
         t.progress = 1.0
-        t.state = "uploading"
+        t.state = "stoppedUP"
         t.completion_on = int(time.time())
         t.last_activity = t.completion_on
         t.file_paths = completed_files
@@ -1265,7 +1265,7 @@ def _run_download_locked(t):
         return
     with t.lock:
         t.progress = 1.0
-        t.state = "uploading"
+        t.state = "stoppedUP"
         t.completion_on = int(time.time())
         t.last_activity = t.completion_on
         t.file_path = found
@@ -1666,13 +1666,13 @@ class Handler(BaseHTTPRequestHandler):
                 "queueing_enabled": True,
                 "max_active_downloads": 5,
                 "max_active_uploads": 5,
-                "max_ratio_enabled": False,
-                "max_ratio": 0,
+                "max_ratio_enabled": True,
+                "max_ratio": 1.0,
                 "max_seeding_time_enabled": False,
                 "max_seeding_time": 0,
                 "max_inactive_seeding_time_enabled": False,
                 "max_inactive_seeding_time": 0,
-                "max_ratio_act": 0,
+                "max_ratio_act": 1,
             })
         elif route == "app/shutdown":
             self._text("Ok.", 200)
@@ -1837,7 +1837,7 @@ class Handler(BaseHTTPRequestHandler):
                     except (ProcessLookupError, OSError):
                         pass
                 with t.lock:
-                    t.state = "downloading" if t.progress < 1.0 else "uploading"
+                    t.state = "downloading" if t.progress < 1.0 else "stoppedUP"
         self._text("Ok.", 200)
 
 

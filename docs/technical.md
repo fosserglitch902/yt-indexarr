@@ -468,6 +468,31 @@ rotating a session that isn't used, so it isn't invalidated either (prefer
 Firefox; Chromium has a cookie-database lock that can make the file lag).
 Re-export early after a sign-out or password change.
 
+### Import behavior (move instead of hardlink)
+
+The spoofer never seeds, so there is no reason to keep the source file in the
+download folder after Sonarr imports it. Real qBittorrent seeding torrents
+report state `uploading`, which tells Sonarr "still seeding" — it then
+**hardlinks/copies** the file into the library and keeps the source so the
+client can keep uploading. To get Sonarr to **move** the file (and delete the
+source on import), a finished torrent must look like a torrent whose seeding
+has already stopped:
+
+- On completion every download (single, season pack, manual playlist) reports
+  state `stoppedUP` instead of `uploading` — Sonarr maps `pausedUP`/`stoppedUP`
+  to `Completed` (so imports still trigger) and marks the item movable.
+- `app/preferences` advertises the "remove at ratio" config
+  (`max_ratio_enabled: true`, `max_ratio: 1.0`, `max_ratio_act: 1`), and
+  completed torrents report `ratio: 1.0` with `ratio_limit: -2` (use global),
+  so Sonarr's `HasReachedSeedLimit` is satisfied — its `CanMoveFiles`/`CanBeRemoved`
+  gate (which also requires the Sonarr download-client setting *Remove
+  Completed Downloads*, on by default) evaluates true.
+
+With `CanMoveFiles: true`, Sonarr's default **Auto** import mode **moves** the
+file into the library (no hardlink), and after a successful import it removes
+the torrent from the client with file deletion, cleaning up the download folder.
+Only change `stoppedUP` if you deliberately want the pre-import source kept.
+
 ### Endpoint coverage
 
 `auth/login|logout`, `app/version|webapiVersion|buildInfo|preferences|shutdown`,

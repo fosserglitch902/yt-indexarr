@@ -25,6 +25,7 @@ const STATE_LABEL = {
   downloading: "Downloading", downloadingUP: "Uploading",
   completed: "Completed", uploading: "Completed", stalledUP: "Seeding",
   checkingUP: "Checking", pausedDL: "Paused", pausedUP: "Paused",
+  stoppedUP: "Completed", stoppedDL: "Paused",
   metaDL: "Resolving", queuedDL: "Queued", queuedUP: "Queued",
   checkingDL: "Checking", error: "Error",
 };
