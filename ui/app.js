@@ -80,6 +80,8 @@ function episodeRow(ep) {
   if (ep.size) row.append(el("span", "meta", fmtSize(ep.size)));
   row.append(badge(STATE_LABEL[ep.state] || ep.state || "—",
     ep.state === "error" ? "err" : (ep.state === "completed" || ep.state === "downloading") ? "" : "warn"));
+  if (ep.quality) row.append(badge(ep.quality));
+  if (ep.codec) row.append(badge(ep.codec));
   if (ep.error) row.append(badge(esc(ep.error), "err"));
   return row;
 }
@@ -105,6 +107,8 @@ function renderItem(item) {
   const badges = el("div", "badges");
   badges.append(badge(STATE_LABEL[item.state] || item.state || "—",
     item.state === "error" ? "err" : (item.state === "downloading") ? "warn" : ""));
+  if (item.quality) badges.append(badge(item.quality));
+  if (item.codec) badges.append(badge(item.codec));
   if (item.is_playlist) badges.append(badge("playlist " + item.episodes.length + " eps"));
   if (item.manual) badges.append(badge("manual"));
   if (item.error) badges.append(badge(esc(item.error), "err"));

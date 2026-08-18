@@ -316,6 +316,14 @@ indexer fetched (TVMaze poster by TVDB series id, falling back to the video's
 own thumbnail). The frontend is vanilla JS with no framework or database, and
 posters load directly from the browser, so RAM stays near-zero.
 
+Finished downloads show their **quality and video codec** (e.g. `1080p` +
+`av1`/`h265`/`vp9`/`h264`) as badges, probed with `ffprobe` on the merged output
+file so they reflect what is actually on disk, not what yt-dlp selected. In a
+playlist pack the badges appear on each nested episode row (the pack itself has
+none). The probe runs only after a file finishes, so nothing is shown while it
+is still downloading; a missing `ffprobe` or an unreadable file just leaves the
+badges empty.
+
 The **Downloads** tab has a manual download box: paste any YouTube video or
 playlist URL and it is queued through the exact same downloader path as a
 Sonarr-triggered grab — the best-format fallback ladder, player-client and PO

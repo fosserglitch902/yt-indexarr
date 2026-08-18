@@ -260,6 +260,8 @@ class Torrent:
         self.manual = manual
         self.poster_url = ""
         self.thumbnail_url = ""
+        self.quality = ""
+        self.codec = ""
         self.episodes = []
         self.lock = threading.Lock()
         self.progress = 0.0
@@ -351,6 +353,8 @@ def _torrent_record(t):
             "manual": t.manual,
             "poster_url": t.poster_url,
             "thumbnail_url": t.thumbnail_url,
+            "quality": t.quality,
+            "codec": t.codec,
             "state": t.state,
             "size": t.size,
             "progress": t.progress,
@@ -365,6 +369,8 @@ def _torrent_record(t):
                     "title": e.get("title", ""),
                     "state": e.get("state", ""),
                     "size": e.get("size", 0),
+                    "quality": e.get("quality", ""),
+                    "codec": e.get("codec", ""),
                     "completion_on": e.get("completion_on", 0),
                     "error": e.get("error"),
                 }
@@ -486,6 +492,33 @@ def _youtube_thumbnail_id(vid):
 
 def _youtube_thumbnail(url):
     return _youtube_thumbnail_id(_youtube_id(url))
+
+
+def _probe_media(fp):
+    """(resolution, codec) of a finished media file via ffprobe (best-effort).
+
+    Probes the merged output so the reported quality/codec reflect what is
+    actually on disk, not what yt-dlp selected. Empty strings when ffprobe is
+    missing or the file cannot be read.
+    """
+    cmd = ["ffprobe", "-v", "quiet", "-print_format", "json",
+           "-show_streams", fp]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return "", ""
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return "", ""
+    for s in data.get("streams", []):
+        if s.get("codec_type") != "video":
+            continue
+        height = s.get("height") or 0
+        name = (s.get("codec_name") or "").lower()
+        codec = {"av01": "av1", "hevc": "h265", "avc1": "h264"}.get(name, name)
+        return (f"{height}p" if height else ""), codec
+    return "", ""
 
 
 def _fill_metadata(t):
@@ -881,7 +914,8 @@ def _run_season_download(t):
         out = os.path.join(dl_dir, f"{series} {ep_tag}.%(ext)s")
         ep_rec = {
             "num": ep, "url": url, "title": vtitle,
-            "state": "downloading", "size": 0, "completion_on": 0, "error": None,
+            "state": "downloading", "size": 0, "completion_on": 0,
+            "quality": "", "codec": "", "error": None,
         }
         t.episodes.append(ep_rec)
         _record_torrent(t)
@@ -950,8 +984,11 @@ def _run_season_download(t):
             completed_files.append(fp)
             size = os.path.getsize(fp)
             total_size += size
+            res, codec = _probe_media(fp)
             ep_rec["state"] = "completed"
             ep_rec["size"] = size
+            ep_rec["quality"] = res
+            ep_rec["codec"] = codec
             ep_rec["completion_on"] = int(time.time())
             _record_torrent(t)
             log.info(
@@ -1037,7 +1074,8 @@ def _run_manual_playlist_download(t):
         out = os.path.join(dl_dir, safe + ".%(ext)s")
         rec = {
             "num": idx, "url": vid["url"], "title": vid["title"] or vid["id"],
-            "state": "downloading", "size": 0, "completion_on": 0, "error": None,
+            "state": "downloading", "size": 0, "completion_on": 0,
+            "quality": "", "codec": "", "error": None,
         }
         t.episodes.append(rec)
         _record_torrent(t)
@@ -1110,8 +1148,11 @@ def _run_manual_playlist_download(t):
             rec["error"] = "all attempts failed"
             _record_torrent(t)
         else:
+            res, codec = _probe_media(fp)
             rec["state"] = "completed"
             rec["size"] = os.path.getsize(fp)
+            rec["quality"] = res
+            rec["codec"] = codec
             rec["completion_on"] = int(time.time())
             _record_torrent(t)
             completed_files.append(fp)
@@ -1278,6 +1319,7 @@ def _run_download_locked(t):
         _record_torrent(t)
         _history_save()
         return
+    res, codec = _probe_media(found)
     with t.lock:
         t.progress = 1.0
         t.state = "stoppedUP"
@@ -1288,6 +1330,8 @@ def _run_download_locked(t):
         t.downloaded = t.size
         t.uploaded = t.size
         t.ratio = 1.0
+        t.quality = res
+        t.codec = codec
     _record_torrent(t)
     _history_save()
     log.info("download complete: %s (%s)", t.hash[:8], found)
