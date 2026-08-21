@@ -30,6 +30,21 @@ services ship in one container:
 - **Zero dependencies** — Python standard library + one shell script; a
   vanilla-JS dashboard with no framework or database.
 
+## PO token provider (recommended for SABR-restricted videos)
+
+YouTube restricts some videos via a SABR (Segment And Byte Range) experiment
+([yt-dlp#12482](https://github.com/yt-dlp/yt-dlp/issues/12482)) that serves
+high-resolution formats only to clients that present a valid GVS PO token.
+Without one, those videos download at 360p only.
+
+The `docker-compose.yml` in this repo bundles an optional
+[`brainicism/bgutil-ytdlp-pot-provider`](https://hub.docker.com/r/brainicism/bgutil-ytdlp-pot-provider)
+container (`pot`) that generates these tokens. It is shared by both the search
+script and the downloader via the `POT_PROVIDER` env var, and unlocks the full
+quality for SABR-restricted videos. It is entirely optional — leave it out and
+such videos still download at 360p. See the
+[technical doc](./docs/technical.md#sabr-restricted-videos) for details.
+
 ## Quick start (Docker)
 
 A prebuilt image is published to GHCR on every push to `main`:
