@@ -10,6 +10,23 @@ services ship in one container:
   indexer's releases and grabs the real video with `yt-dlp` at the best
   available quality, reporting progress/state to Sonarr like a normal torrent
   client.
+  
+## The dashboard
+
+The downloader doubles as a small web UI on its own port
+(`http://<host>:9177/`), no extra service:
+
+<img width="1908" height="685" alt="image" src="https://github.com/user-attachments/assets/57e2ef87-6951-4dc4-9093-94e317c48d7f" />
+
+
+- **Downloads** — every download (completed, failed, in-progress) with size,
+  channel, finish time, and a poster; playlist packs expand per episode. The
+  **manual download** box at the top queues any YouTube video or playlist URL
+  through the exact same downloader path as a Sonarr grab.
+- **Settings** — edit the settings below live: TVDB API key, PO provider,
+  codec/container, log levels, credentials, and a paste box for `cookies.txt`.
+  Compose env vars **always win** over UI edits; secrets are never echoed back.
+  When auth is enabled you sign in with the same credentials Sonarr uses.
 
 ## Features
 
@@ -70,20 +87,6 @@ State is split across two volumes: **config** (`config.json`, `history.json`,
 `cookies.txt`, API caches) and **downloads** (the media files). Compose sets
 the state paths explicitly; the [technical doc](./docs/technical.md#docker)
 has the full compose reference.
-
-## The dashboard
-
-The downloader doubles as a small web UI on its own port
-(`http://<host>:9177/`), no extra service:
-
-- **Downloads** — every download (completed, failed, in-progress) with size,
-  channel, finish time, and a poster; playlist packs expand per episode. The
-  **manual download** box at the top queues any YouTube video or playlist URL
-  through the exact same downloader path as a Sonarr grab.
-- **Settings** — edit the settings below live: TVDB API key, PO provider,
-  codec/container, log levels, credentials, and a paste box for `cookies.txt`.
-  Compose env vars **always win** over UI edits; secrets are never echoed back.
-  When auth is enabled you sign in with the same credentials Sonarr uses.
 
 ## Configuration
 
