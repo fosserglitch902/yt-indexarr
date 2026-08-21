@@ -117,6 +117,9 @@ more — is documented in the
 3. Point Sonarr at a **qBittorrent** download client on `<host>:9177` with the
    spoofer's `YT_QBT_USERNAME`/`YT_QBT_PASSWORD`.
 
+<img width="707" height="739" alt="image" src="https://github.com/user-attachments/assets/4685596f-6893-409b-a156-37d2550c1e28" />
+<img width="705" height="1140" alt="image" src="https://github.com/user-attachments/assets/22168680-6484-4fc2-ae95-72fe025545ad" />
+
 The indexer only ever returns YouTube videos and every search runs `yt-dlp`, so
 treat it as a **manual, targeted** source:
 
@@ -128,6 +131,10 @@ treat it as a **manual, targeted** source:
 - Give the downloader a **lower priority** than your main client (1–50, higher
   = lower), so normal releases stay on your main client and only YouTube grabs
   fall through to it.
+  
+<img width="697" height="1037" alt="image" src="https://github.com/user-attachments/assets/1777970e-2ff0-4d4f-9fd7-0f2488f215ae" />
+<img width="694" height="1073" alt="image" src="https://github.com/user-attachments/assets/97706dc8-3b40-4bc0-9a4a-7c4d99188835" />
+
 
 ## Docs
 
