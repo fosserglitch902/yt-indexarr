@@ -133,3 +133,24 @@ treat it as a **manual, targeted** source:
 
 - [**Technical reference**](./docs/technical.md) — every script, endpoint,
   environment variable, knob, and the SABR / cookies / Docker deep-dive.
+
+## Acknowledgements
+
+This project relies on several excellent open-source projects:
+
+- **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — the workhorse that does the
+  actual YouTube extraction and downloading. Everything here wraps around it.
+- **[brainicism/bgutil-ytdlp-pot-provider](https://hub.docker.com/r/brainicism/bgutil-ytdlp-pot-provider)**
+  — the PO token provider that unblocks SABR-restricted videos.
+- **[Deno](https://deno.land/)** / **[Node.js](https://nodejs.org/)** — runtimes
+  for the bundled `yt-dlp-ejs` challenge scripts (used by the token provider).
+- **[TVMaze](https://www.tvmaze.com/)** and **[TheTVDB](https://thetvdb.com/)** —
+  episode metadata APIs (keyless TVMaze + optional TheTVDB for localized titles).
+
+## Disclaimer
+
+This project is **not affiliated with, endorsed by, or connected to** yt-dlp,
+Google, or YouTube in any way. yt-dlp is a trademark of its respective owners,
+and YouTube is a trademark of Google LLC. Use of these names and trademarks is
+for identification purposes only and does not imply any affiliation or
+endorsement.
